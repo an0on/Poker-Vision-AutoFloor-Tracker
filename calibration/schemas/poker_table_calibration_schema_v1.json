@@ -1,0 +1,132 @@
+{
+  "schema_version": "1.0",
+  "table_model_id": "dopo_10max_calibration_v1",
+  "orientation": "rotated_90_clockwise",
+  "description": "Calibration schema based on 4-point rail/action fitting, 2-point seat divider lines, and one 4-point board zone.",
+  "image": {
+    "width": null,
+    "height": null,
+    "source": null
+  },
+  "global_geometry": {
+    "outer_rail": {
+      "kind": "capsule_from_4_points",
+      "description": "Outer red rail. Define with 4 points: top-left tangent, top-right tangent, bottom-right tangent, bottom-left tangent on the long straight sections. Radius is derived from vertical distance between top and bottom straights.",
+      "points": {
+        "top_left": null,
+        "top_right": null,
+        "bottom_right": null,
+        "bottom_left": null
+      },
+      "derived": {
+        "top_line": null,
+        "bottom_line": null,
+        "left_radius_center": null,
+        "right_radius_center": null,
+        "radius": null
+      }
+    },
+    "inner_rail": {
+      "kind": "capsule_from_4_points",
+      "description": "Inner oval / inner red boundary. Same construction as outer_rail.",
+      "points": {
+        "top_left": null,
+        "top_right": null,
+        "bottom_right": null,
+        "bottom_left": null
+      },
+      "derived": {
+        "top_line": null,
+        "bottom_line": null,
+        "left_radius_center": null,
+        "right_radius_center": null,
+        "radius": null
+      }
+    },
+    "action_area": {
+      "kind": "capsule_from_4_points",
+      "description": "Yellow action-area boundary / dealer-button path boundary. Same 4-point capsule construction.",
+      "points": {
+        "top_left": null,
+        "top_right": null,
+        "bottom_right": null,
+        "bottom_left": null
+      },
+      "derived": {
+        "top_line": null,
+        "bottom_line": null,
+        "left_radius_center": null,
+        "right_radius_center": null,
+        "radius": null
+      }
+    }
+  },
+  "seat_dividers": {
+    "description": "Each divider is one straight line between one picked point on the outer ring and one picked point on the inner/action ring.",
+    "count": 10,
+    "lines": {
+      "d1": { "outer_ring_point": null, "inner_ring_point": null },
+      "d2": { "outer_ring_point": null, "inner_ring_point": null },
+      "d3": { "outer_ring_point": null, "inner_ring_point": null },
+      "d4": { "outer_ring_point": null, "inner_ring_point": null },
+      "d5": { "outer_ring_point": null, "inner_ring_point": null },
+      "d6": { "outer_ring_point": null, "inner_ring_point": null },
+      "d7": { "outer_ring_point": null, "inner_ring_point": null },
+      "d8": { "outer_ring_point": null, "inner_ring_point": null },
+      "d9": { "outer_ring_point": null, "inner_ring_point": null },
+      "d10": { "outer_ring_point": null, "inner_ring_point": null }
+    },
+    "seat_wedges_derived": {
+      "seat_1": null,
+      "seat_2": null,
+      "seat_3": null,
+      "seat_4": null,
+      "seat_5": null,
+      "seat_6": null,
+      "seat_7": null,
+      "seat_8": null,
+      "seat_9": null,
+      "seat_10": null
+    }
+  },
+  "board_zone": {
+    "kind": "isosceles_quadrilateral",
+    "description": "One single board zone defined by 4 points. Card count inside this zone drives flop/turn/river detection.",
+    "points": {
+      "top_left": null,
+      "top_right": null,
+      "bottom_right": null,
+      "bottom_left": null
+    },
+    "logic": {
+      "3_cards": "flop",
+      "4_cards": "turn",
+      "5_cards": "river"
+    }
+  },
+  "dealer_button_tracking": {
+    "allowed_zone": null,
+    "position_assignment": "nearest_player_area_or_nearest_seat_anchor",
+    "notes": [
+      "Dealer button is assumed to be visually distinct and directly detectable.",
+      "After detection, assign it to the nearest player area / seat wedge.",
+      "A dedicated dealer-button boundary band is not required."
+    ]
+  },
+  "table_metadata": {
+    "seat_1_definition": {
+      "required": true,
+      "value": null,
+      "description": "At the end of calibration, explicitly assign which derived seat wedge is Seat 1. The remaining seats are then numbered clockwise."
+    }
+  },
+  "runtime_rules": {
+    "seat_occupancy_priority": [
+      "chips",
+      "all_in_button",
+      "face_down_cards_secondary"
+    ],
+    "dealer_button_path": "direct_detection_with_nearest_player_assignment",
+    "board_state_source": "card_count_in_board_zone"
+  }
+}

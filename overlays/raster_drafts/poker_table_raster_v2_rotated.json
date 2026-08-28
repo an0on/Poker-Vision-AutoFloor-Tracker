@@ -1,0 +1,484 @@
+{
+  "table_model_id": "dopo_10max_v2_rotated_from_user_annotations",
+  "source_image": "/opt/data/cache/images/img_4f4b3352d112.jpg",
+  "orientation": "rotated_90_clockwise",
+  "rotated_canvas": {
+    "width": 719,
+    "height": 1280
+  },
+  "global_zones": {
+    "outer_rail_outer": {
+      "x": 0.0737,
+      "y": 0.0219,
+      "w": 0.8484,
+      "h": 0.9516
+    },
+    "outer_rail_inner": {
+      "x": 0.1168,
+      "y": 0.05,
+      "w": 0.7399,
+      "h": 0.8984
+    },
+    "action_area": {
+      "x": 0.3241,
+      "y": 0.1656,
+      "w": 0.3588,
+      "h": 0.6687
+    },
+    "dealer_button_path_boundary_note": "Dealer button path is the boundary between seat wedges and the action area.",
+    "board_flop_group": {
+      "x": 0.484,
+      "y": 0.3937,
+      "w": 0.128,
+      "h": 0.1094
+    },
+    "board_turn": {
+      "x": 0.484,
+      "y": 0.507,
+      "w": 0.128,
+      "h": 0.0414
+    },
+    "board_river": {
+      "x": 0.484,
+      "y": 0.5523,
+      "w": 0.128,
+      "h": 0.0414
+    },
+    "board_group_outline": {
+      "x": 0.4729,
+      "y": 0.3859,
+      "w": 0.1544,
+      "h": 0.2172
+    }
+  },
+  "seat_divider_lines": {
+    "left_mid": {
+      "p1": [
+        0.5035,
+        0.1656
+      ],
+      "p2": [
+        0.5035,
+        0.0578
+      ]
+    },
+    "top_1": {
+      "p1": [
+        0.6606,
+        0.2461
+      ],
+      "p2": [
+        0.8442,
+        0.1695
+      ]
+    },
+    "top_2": {
+      "p1": [
+        0.6801,
+        0.3656
+      ],
+      "p2": [
+        0.8442,
+        0.3063
+      ]
+    },
+    "top_3": {
+      "p1": [
+        0.6815,
+        0.4992
+      ],
+      "p2": [
+        0.8526,
+        0.4969
+      ]
+    },
+    "top_4": {
+      "p1": [
+        0.6801,
+        0.6297
+      ],
+      "p2": [
+        0.8442,
+        0.6633
+      ]
+    },
+    "top_5": {
+      "p1": [
+        0.6773,
+        0.7812
+      ],
+      "p2": [
+        0.8414,
+        0.8523
+      ]
+    },
+    "right_mid": {
+      "p1": [
+        0.5035,
+        0.8336
+      ],
+      "p2": [
+        0.5035,
+        0.9594
+      ]
+    },
+    "bot_1": {
+      "p1": [
+        0.338,
+        0.2461
+      ],
+      "p2": [
+        0.146,
+        0.1672
+      ]
+    },
+    "bot_2": {
+      "p1": [
+        0.3255,
+        0.4281
+      ],
+      "p2": [
+        0.1433,
+        0.3914
+      ]
+    },
+    "bot_3": {
+      "p1": [
+        0.3268,
+        0.6297
+      ],
+      "p2": [
+        0.1433,
+        0.6617
+      ]
+    },
+    "bot_4": {
+      "p1": [
+        0.3352,
+        0.7805
+      ],
+      "p2": [
+        0.146,
+        0.8398
+      ]
+    }
+  },
+  "seats": {
+    "1": {
+      "anchor": {
+        "x": 0.766,
+        "y": 0.5725
+      },
+      "seat_wedge_polygon": [
+        [
+          0.8567,
+          0.4992
+        ],
+        [
+          0.8442,
+          0.6617
+        ],
+        [
+          0.6801,
+          0.6297
+        ],
+        [
+          0.6829,
+          0.4992
+        ]
+      ],
+      "occupancy_priority": [
+        "chips",
+        "all_in_button",
+        "face_down_cards_secondary"
+      ],
+      "notes": "Seat wedge follows the user-drawn yellow segmentation."
+    },
+    "2": {
+      "anchor": {
+        "x": 0.7608,
+        "y": 0.7312
+      },
+      "seat_wedge_polygon": [
+        [
+          0.8442,
+          0.6617
+        ],
+        [
+          0.8414,
+          0.8523
+        ],
+        [
+          0.6773,
+          0.7812
+        ],
+        [
+          0.6801,
+          0.6297
+        ]
+      ],
+      "occupancy_priority": [
+        "chips",
+        "all_in_button",
+        "face_down_cards_secondary"
+      ],
+      "notes": "Seat wedge follows the user-drawn yellow segmentation."
+    },
+    "3": {
+      "anchor": {
+        "x": 0.6765,
+        "y": 0.8728
+      },
+      "seat_wedge_polygon": [
+        [
+          0.8414,
+          0.8523
+        ],
+        [
+          0.8567,
+          0.9484
+        ],
+        [
+          0.5035,
+          0.9484
+        ],
+        [
+          0.5035,
+          0.8336
+        ],
+        [
+          0.6773,
+          0.7812
+        ]
+      ],
+      "occupancy_priority": [
+        "chips",
+        "all_in_button",
+        "face_down_cards_secondary"
+      ],
+      "notes": "Seat wedge follows the user-drawn yellow segmentation."
+    },
+    "4": {
+      "anchor": {
+        "x": 0.3193,
+        "y": 0.8709
+      },
+      "seat_wedge_polygon": [
+        [
+          0.5035,
+          0.8336
+        ],
+        [
+          0.5035,
+          0.9484
+        ],
+        [
+          0.1168,
+          0.9484
+        ],
+        [
+          0.1377,
+          0.8438
+        ],
+        [
+          0.3352,
+          0.7805
+        ]
+      ],
+      "occupancy_priority": [
+        "chips",
+        "all_in_button",
+        "face_down_cards_secondary"
+      ],
+      "notes": "Seat wedge follows the user-drawn yellow segmentation."
+    },
+    "5": {
+      "anchor": {
+        "x": 0.2357,
+        "y": 0.7289
+      },
+      "seat_wedge_polygon": [
+        [
+          0.1433,
+          0.6617
+        ],
+        [
+          0.1377,
+          0.8438
+        ],
+        [
+          0.3352,
+          0.7805
+        ],
+        [
+          0.3268,
+          0.6297
+        ]
+      ],
+      "occupancy_priority": [
+        "chips",
+        "all_in_button",
+        "face_down_cards_secondary"
+      ],
+      "notes": "Seat wedge follows the user-drawn yellow segmentation."
+    },
+    "6": {
+      "anchor": {
+        "x": 0.235,
+        "y": 0.5719
+      },
+      "seat_wedge_polygon": [
+        [
+          0.146,
+          0.4969
+        ],
+        [
+          0.1433,
+          0.6617
+        ],
+        [
+          0.3268,
+          0.6297
+        ],
+        [
+          0.3241,
+          0.4992
+        ]
+      ],
+      "occupancy_priority": [
+        "chips",
+        "all_in_button",
+        "face_down_cards_secondary"
+      ],
+      "notes": "Seat wedge follows the user-drawn yellow segmentation."
+    },
+    "7": {
+      "anchor": {
+        "x": 0.2347,
+        "y": 0.4537
+      },
+      "seat_wedge_polygon": [
+        [
+          0.1433,
+          0.3906
+        ],
+        [
+          0.146,
+          0.4969
+        ],
+        [
+          0.3241,
+          0.4992
+        ],
+        [
+          0.3255,
+          0.4281
+        ]
+      ],
+      "occupancy_priority": [
+        "chips",
+        "all_in_button",
+        "face_down_cards_secondary"
+      ],
+      "notes": "Seat wedge follows the user-drawn yellow segmentation."
+    },
+    "8": {
+      "anchor": {
+        "x": 0.2382,
+        "y": 0.308
+      },
+      "seat_wedge_polygon": [
+        [
+          0.146,
+          0.1672
+        ],
+        [
+          0.1433,
+          0.3906
+        ],
+        [
+          0.3255,
+          0.4281
+        ],
+        [
+          0.338,
+          0.2461
+        ]
+      ],
+      "occupancy_priority": [
+        "chips",
+        "all_in_button",
+        "face_down_cards_secondary"
+      ],
+      "notes": "Seat wedge follows the user-drawn yellow segmentation."
+    },
+    "9": {
+      "anchor": {
+        "x": 0.3216,
+        "y": 0.1358
+      },
+      "seat_wedge_polygon": [
+        [
+          0.1168,
+          0.05
+        ],
+        [
+          0.146,
+          0.1672
+        ],
+        [
+          0.338,
+          0.2461
+        ],
+        [
+          0.5035,
+          0.1656
+        ],
+        [
+          0.5035,
+          0.05
+        ]
+      ],
+      "occupancy_priority": [
+        "chips",
+        "all_in_button",
+        "face_down_cards_secondary"
+      ],
+      "notes": "Seat wedge follows the user-drawn yellow segmentation."
+    },
+    "10": {
+      "anchor": {
+        "x": 0.6737,
+        "y": 0.1363
+      },
+      "seat_wedge_polygon": [
+        [
+          0.8567,
+          0.05
+        ],
+        [
+          0.8442,
+          0.1695
+        ],
+        [
+          0.6606,
+          0.2461
+        ],
+        [
+          0.5035,
+          0.1656
+        ],
+        [
+          0.5035,
+          0.05
+        ]
+      ],
+      "occupancy_priority": [
+        "chips",
+        "all_in_button",
+        "face_down_cards_secondary"
+      ],
+      "notes": "Seat wedge follows the user-drawn yellow segmentation."
+    }
+  }
+}

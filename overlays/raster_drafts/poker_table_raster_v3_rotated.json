@@ -1,0 +1,484 @@
+{
+  "table_model_id": "dopo_10max_v3_rotated_precise_from_user_annotations",
+  "source_image": "/opt/data/cache/images/img_4f4b3352d112.jpg",
+  "orientation": "rotated_90_clockwise",
+  "rotated_canvas": {
+    "width": 719,
+    "height": 1280
+  },
+  "global_zones": {
+    "outer_rail_outer": {
+      "x": 0.0682,
+      "y": 0.0203,
+      "w": 0.8623,
+      "h": 0.9547
+    },
+    "outer_rail_inner": {
+      "x": 0.1113,
+      "y": 0.0516,
+      "w": 0.758,
+      "h": 0.8922
+    },
+    "action_area": {
+      "x": 0.3102,
+      "y": 0.168,
+      "w": 0.3783,
+      "h": 0.6641
+    },
+    "board_flop_group": {
+      "x": 0.484,
+      "y": 0.4062,
+      "w": 0.128,
+      "h": 0.1078
+    },
+    "board_turn": {
+      "x": 0.484,
+      "y": 0.5188,
+      "w": 0.128,
+      "h": 0.0359
+    },
+    "board_river": {
+      "x": 0.484,
+      "y": 0.5594,
+      "w": 0.128,
+      "h": 0.0359
+    },
+    "board_group_outline": {
+      "x": 0.4743,
+      "y": 0.3969,
+      "w": 0.153,
+      "h": 0.2078
+    },
+    "dealer_button_path_boundary_note": "Dealer button path follows the boundary between seat wedges and the action area."
+  },
+  "seat_divider_lines": {
+    "left_mid": {
+      "p1": [
+        0.5035,
+        0.168
+      ],
+      "p2": [
+        0.5035,
+        0.0633
+      ]
+    },
+    "top_1": {
+      "p1": [
+        0.6606,
+        0.2562
+      ],
+      "p2": [
+        0.8442,
+        0.1742
+      ]
+    },
+    "top_2": {
+      "p1": [
+        0.6801,
+        0.3703
+      ],
+      "p2": [
+        0.8442,
+        0.3109
+      ]
+    },
+    "top_3": {
+      "p1": [
+        0.6871,
+        0.4992
+      ],
+      "p2": [
+        0.8554,
+        0.4977
+      ]
+    },
+    "top_4": {
+      "p1": [
+        0.6815,
+        0.6297
+      ],
+      "p2": [
+        0.8442,
+        0.6648
+      ]
+    },
+    "top_5": {
+      "p1": [
+        0.6606,
+        0.7812
+      ],
+      "p2": [
+        0.8442,
+        0.8508
+      ]
+    },
+    "right_mid": {
+      "p1": [
+        0.5035,
+        0.8313
+      ],
+      "p2": [
+        0.5035,
+        0.9461
+      ]
+    },
+    "bot_1": {
+      "p1": [
+        0.3435,
+        0.25
+      ],
+      "p2": [
+        0.1516,
+        0.1703
+      ]
+    },
+    "bot_2": {
+      "p1": [
+        0.3199,
+        0.4273
+      ],
+      "p2": [
+        0.1474,
+        0.3906
+      ]
+    },
+    "bot_3": {
+      "p1": [
+        0.3199,
+        0.6297
+      ],
+      "p2": [
+        0.146,
+        0.6633
+      ]
+    },
+    "bot_4": {
+      "p1": [
+        0.3435,
+        0.7773
+      ],
+      "p2": [
+        0.1488,
+        0.8383
+      ]
+    }
+  },
+  "seats": {
+    "1": {
+      "anchor": {
+        "x": 0.767,
+        "y": 0.5732
+      },
+      "seat_wedge_polygon": [
+        [
+          0.8554,
+          0.4992
+        ],
+        [
+          0.8442,
+          0.6648
+        ],
+        [
+          0.6815,
+          0.6297
+        ],
+        [
+          0.6871,
+          0.4992
+        ]
+      ],
+      "occupancy_priority": [
+        "chips",
+        "all_in_button",
+        "face_down_cards_secondary"
+      ],
+      "notes": "Seat wedge tuned to the printed table pattern and the user-drawn segmentation."
+    },
+    "2": {
+      "anchor": {
+        "x": 0.7576,
+        "y": 0.7316
+      },
+      "seat_wedge_polygon": [
+        [
+          0.8442,
+          0.6648
+        ],
+        [
+          0.8442,
+          0.8508
+        ],
+        [
+          0.6606,
+          0.7812
+        ],
+        [
+          0.6815,
+          0.6297
+        ]
+      ],
+      "occupancy_priority": [
+        "chips",
+        "all_in_button",
+        "face_down_cards_secondary"
+      ],
+      "notes": "Seat wedge tuned to the printed table pattern and the user-drawn segmentation."
+    },
+    "3": {
+      "anchor": {
+        "x": 0.6759,
+        "y": 0.8706
+      },
+      "seat_wedge_polygon": [
+        [
+          0.8442,
+          0.8508
+        ],
+        [
+          0.8679,
+          0.9437
+        ],
+        [
+          0.5035,
+          0.9461
+        ],
+        [
+          0.5035,
+          0.8313
+        ],
+        [
+          0.6606,
+          0.7812
+        ]
+      ],
+      "occupancy_priority": [
+        "chips",
+        "all_in_button",
+        "face_down_cards_secondary"
+      ],
+      "notes": "Seat wedge tuned to the printed table pattern and the user-drawn segmentation."
+    },
+    "4": {
+      "anchor": {
+        "x": 0.3221,
+        "y": 0.8673
+      },
+      "seat_wedge_polygon": [
+        [
+          0.5035,
+          0.8313
+        ],
+        [
+          0.5035,
+          0.9461
+        ],
+        [
+          0.1113,
+          0.9437
+        ],
+        [
+          0.1488,
+          0.8383
+        ],
+        [
+          0.3435,
+          0.7773
+        ]
+      ],
+      "occupancy_priority": [
+        "chips",
+        "all_in_button",
+        "face_down_cards_secondary"
+      ],
+      "notes": "Seat wedge tuned to the printed table pattern and the user-drawn segmentation."
+    },
+    "5": {
+      "anchor": {
+        "x": 0.2396,
+        "y": 0.7271
+      },
+      "seat_wedge_polygon": [
+        [
+          0.146,
+          0.6633
+        ],
+        [
+          0.1488,
+          0.8383
+        ],
+        [
+          0.3435,
+          0.7773
+        ],
+        [
+          0.3199,
+          0.6297
+        ]
+      ],
+      "occupancy_priority": [
+        "chips",
+        "all_in_button",
+        "face_down_cards_secondary"
+      ],
+      "notes": "Seat wedge tuned to the printed table pattern and the user-drawn segmentation."
+    },
+    "6": {
+      "anchor": {
+        "x": 0.2309,
+        "y": 0.5725
+      },
+      "seat_wedge_polygon": [
+        [
+          0.1446,
+          0.4977
+        ],
+        [
+          0.146,
+          0.6633
+        ],
+        [
+          0.3199,
+          0.6297
+        ],
+        [
+          0.3129,
+          0.4992
+        ]
+      ],
+      "occupancy_priority": [
+        "chips",
+        "all_in_button",
+        "face_down_cards_secondary"
+      ],
+      "notes": "Seat wedge tuned to the printed table pattern and the user-drawn segmentation."
+    },
+    "7": {
+      "anchor": {
+        "x": 0.2312,
+        "y": 0.4537
+      },
+      "seat_wedge_polygon": [
+        [
+          0.1474,
+          0.3906
+        ],
+        [
+          0.1446,
+          0.4977
+        ],
+        [
+          0.3129,
+          0.4992
+        ],
+        [
+          0.3199,
+          0.4273
+        ]
+      ],
+      "occupancy_priority": [
+        "chips",
+        "all_in_button",
+        "face_down_cards_secondary"
+      ],
+      "notes": "Seat wedge tuned to the printed table pattern and the user-drawn segmentation."
+    },
+    "8": {
+      "anchor": {
+        "x": 0.2406,
+        "y": 0.3096
+      },
+      "seat_wedge_polygon": [
+        [
+          0.1516,
+          0.1703
+        ],
+        [
+          0.1474,
+          0.3906
+        ],
+        [
+          0.3199,
+          0.4273
+        ],
+        [
+          0.3435,
+          0.25
+        ]
+      ],
+      "occupancy_priority": [
+        "chips",
+        "all_in_button",
+        "face_down_cards_secondary"
+      ],
+      "notes": "Seat wedge tuned to the printed table pattern and the user-drawn segmentation."
+    },
+    "9": {
+      "anchor": {
+        "x": 0.3227,
+        "y": 0.1383
+      },
+      "seat_wedge_polygon": [
+        [
+          0.1113,
+          0.0516
+        ],
+        [
+          0.1516,
+          0.1703
+        ],
+        [
+          0.3435,
+          0.25
+        ],
+        [
+          0.5035,
+          0.168
+        ],
+        [
+          0.5035,
+          0.0516
+        ]
+      ],
+      "occupancy_priority": [
+        "chips",
+        "all_in_button",
+        "face_down_cards_secondary"
+      ],
+      "notes": "Seat wedge tuned to the printed table pattern and the user-drawn segmentation."
+    },
+    "10": {
+      "anchor": {
+        "x": 0.6762,
+        "y": 0.1403
+      },
+      "seat_wedge_polygon": [
+        [
+          0.8693,
+          0.0516
+        ],
+        [
+          0.8442,
+          0.1742
+        ],
+        [
+          0.6606,
+          0.2562
+        ],
+        [
+          0.5035,
+          0.168
+        ],
+        [
+          0.5035,
+          0.0516
+        ]
+      ],
+      "occupancy_priority": [
+        "chips",
+        "all_in_button",
+        "face_down_cards_secondary"
+      ],
+      "notes": "Seat wedge tuned to the printed table pattern and the user-drawn segmentation."
+    }
+  }
+}

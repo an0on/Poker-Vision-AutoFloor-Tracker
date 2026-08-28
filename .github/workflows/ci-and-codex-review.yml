@@ -1,0 +1,72 @@
+name: CI and Codex review
+
+# Verify block: tests/build first, then Codex reviews the diff against PRD.md.
+# Both are required status checks on `main` — see scripts/setup-branch-protection.sh.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: npm ci
+      - name: Run tests
+        run: npm test
+      - name: Build
+        run: npm run build
+
+  codex-review:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get PR diff
+        run: git diff origin/${{ github.base_ref }}...HEAD > pr.diff
+
+      # NOTE: verify the current package name and CLI flags against OpenAI's
+      # own Codex CLI docs before relying on this — both change over time
+      # and this is a placeholder based on the general shape of the tool.
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex
+
+      - name: Run Codex review against PRD
+        env:
+          # Prefer ChatGPT subscription auth over an API key where the CLI
+          # supports it, to avoid separate per-token billing. Check Codex
+          # CLI's current auth docs for the exact secret/flag to use.
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          codex review \
+            --diff pr.diff \
+            --context PRD.md \
+            --output-format json > codex-verdict.json
+          cat codex-verdict.json
+
+      - name: Post verdict as PR comment and gate the check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const verdict = JSON.parse(fs.readFileSync('codex-verdict.json', 'utf8'));
+            const marker = '<!-- codex-verdict -->';
+            const body = `${marker}\n\`\`\`json\n${JSON.stringify(verdict, null, 2)}\n\`\`\``;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+            if (verdict.status !== 'pass') {
+              core.setFailed(`Codex review failed: ${verdict.findings.length} finding(s)`);
+            }

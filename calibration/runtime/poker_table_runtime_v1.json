@@ -1,0 +1,1097 @@
+{
+  "schema_version": "1.0",
+  "runtime_model_id": "dopo_10max_runtime_v1",
+  "based_on_calibration": "/opt/data/tmp/poker_table_calibration_instance_current_table_v3_landscape.json",
+  "image": {
+    "width": 1280,
+    "height": 719,
+    "orientation": "landscape"
+  },
+  "table": {
+    "outer_rail": {
+      "kind": "capsule_from_4_points",
+      "points": {
+        "top_left": [
+          201,
+          50
+        ],
+        "top_right": [
+          1078,
+          50
+        ],
+        "bottom_right": [
+          1078,
+          670
+        ],
+        "bottom_left": [
+          201,
+          670
+        ]
+      },
+      "points_normalized": {
+        "top_left": [
+          0.157,
+          0.0695
+        ],
+        "top_right": [
+          0.8422,
+          0.0695
+        ],
+        "bottom_right": [
+          0.8422,
+          0.9318
+        ],
+        "bottom_left": [
+          0.157,
+          0.9318
+        ]
+      }
+    },
+    "inner_rail": {
+      "kind": "capsule_from_4_points",
+      "points": {
+        "top_left": [
+          221,
+          94
+        ],
+        "top_right": [
+          1060,
+          94
+        ],
+        "bottom_right": [
+          1060,
+          639
+        ],
+        "bottom_left": [
+          221,
+          639
+        ]
+      },
+      "points_normalized": {
+        "top_left": [
+          0.1727,
+          0.1307
+        ],
+        "top_right": [
+          0.8281,
+          0.1307
+        ],
+        "bottom_right": [
+          0.8281,
+          0.8887
+        ],
+        "bottom_left": [
+          0.1727,
+          0.8887
+        ]
+      }
+    },
+    "action_area": {
+      "kind": "capsule_from_4_points",
+      "points": {
+        "top_left": [
+          351,
+          224
+        ],
+        "top_right": [
+          930,
+          224
+        ],
+        "bottom_right": [
+          930,
+          496
+        ],
+        "bottom_left": [
+          351,
+          496
+        ]
+      },
+      "points_normalized": {
+        "top_left": [
+          0.2742,
+          0.3115
+        ],
+        "top_right": [
+          0.7266,
+          0.3115
+        ],
+        "bottom_right": [
+          0.7266,
+          0.6898
+        ],
+        "bottom_left": [
+          0.2742,
+          0.6898
+        ]
+      }
+    },
+    "board_zone": {
+      "kind": "isosceles_quadrilateral",
+      "points": {
+        "top_left": [
+          508,
+          268
+        ],
+        "top_right": [
+          774,
+          268
+        ],
+        "bottom_right": [
+          774,
+          378
+        ],
+        "bottom_left": [
+          508,
+          378
+        ]
+      },
+      "points_normalized": {
+        "top_left": [
+          0.3969,
+          0.3727
+        ],
+        "top_right": [
+          0.6047,
+          0.3727
+        ],
+        "bottom_right": [
+          0.6047,
+          0.5257
+        ],
+        "bottom_left": [
+          0.3969,
+          0.5257
+        ]
+      },
+      "logic": {
+        "3_cards": "flop",
+        "4_cards": "turn",
+        "5_cards": "river"
+      }
+    }
+  },
+  "seat_1_definition": {
+    "seat_id": "seat_1",
+    "between_dividers": [
+      "d2",
+      "d3"
+    ],
+    "label": "top_center",
+    "numbering_direction": "clockwise",
+    "notes": "Provisional default for this image. Changeable later if desired."
+  },
+  "numbering_direction": "clockwise",
+  "dealer_button_tracking": {
+    "detector_required": true,
+    "position_assignment": "nearest_player_area_or_nearest_seat_anchor",
+    "fallback": "nearest_seat_wedge_polygon"
+  },
+  "board_state_logic": {
+    "zone": "board_zone",
+    "3_cards": "flop",
+    "4_cards": "turn",
+    "5_cards": "river"
+  },
+  "seat_runtime": {
+    "seat_1": {
+      "seat_id": "seat_1",
+      "divider_before": "d2",
+      "divider_after": "d3",
+      "seat_anchor": [
+        537.0,
+        167.8
+      ],
+      "seat_anchor_normalized": [
+        0.4195,
+        0.2334
+      ],
+      "seat_wedge_polygon": [
+        [
+          398,
+          112
+        ],
+        [
+          637,
+          104
+        ],
+        [
+          639,
+          225
+        ],
+        [
+          474,
+          230
+        ]
+      ],
+      "seat_wedge_polygon_normalized": [
+        [
+          0.3109,
+          0.1558
+        ],
+        [
+          0.4977,
+          0.1446
+        ],
+        [
+          0.4992,
+          0.3129
+        ],
+        [
+          0.3703,
+          0.3199
+        ]
+      ],
+      "player_area": {
+        "x": 398,
+        "y": 104,
+        "w": 241,
+        "h": 126
+      },
+      "player_area_normalized": {
+        "x": 0.3109,
+        "y": 0.1446,
+        "w": 0.1883,
+        "h": 0.1752
+      },
+      "chip_zone": {
+        "x": 436.6,
+        "y": 126.7,
+        "w": 163.9,
+        "h": 80.6
+      },
+      "chip_zone_normalized": {
+        "x": 0.3411,
+        "y": 0.1762,
+        "w": 0.128,
+        "h": 0.1121
+      },
+      "card_presence_zone": {
+        "x": 463.1,
+        "y": 141.8,
+        "w": 110.9,
+        "h": 50.4
+      },
+      "card_presence_zone_normalized": {
+        "x": 0.3618,
+        "y": 0.1972,
+        "w": 0.0866,
+        "h": 0.0701
+      },
+      "occupancy_priority": [
+        "chips",
+        "all_in_button",
+        "face_down_cards_secondary"
+      ]
+    },
+    "seat_2": {
+      "seat_id": "seat_2",
+      "divider_before": "d3",
+      "divider_after": "d4",
+      "seat_anchor": [
+        733.2,
+        167.5
+      ],
+      "seat_anchor_normalized": [
+        0.5728,
+        0.233
+      ],
+      "seat_wedge_polygon": [
+        [
+          637,
+          104
+        ],
+        [
+          851,
+          112
+        ],
+        [
+          806,
+          229
+        ],
+        [
+          639,
+          225
+        ]
+      ],
+      "seat_wedge_polygon_normalized": [
+        [
+          0.4977,
+          0.1446
+        ],
+        [
+          0.6648,
+          0.1558
+        ],
+        [
+          0.6297,
+          0.3185
+        ],
+        [
+          0.4992,
+          0.3129
+        ]
+      ],
+      "player_area": {
+        "x": 637,
+        "y": 104,
+        "w": 214,
+        "h": 125
+      },
+      "player_area_normalized": {
+        "x": 0.4977,
+        "y": 0.1446,
+        "w": 0.1672,
+        "h": 0.1739
+      },
+      "chip_zone": {
+        "x": 671.2,
+        "y": 126.5,
+        "w": 145.5,
+        "h": 80.0
+      },
+      "chip_zone_normalized": {
+        "x": 0.5244,
+        "y": 0.1759,
+        "w": 0.1137,
+        "h": 0.1113
+      },
+      "card_presence_zone": {
+        "x": 694.8,
+        "y": 141.5,
+        "w": 98.4,
+        "h": 50.0
+      },
+      "card_presence_zone_normalized": {
+        "x": 0.5428,
+        "y": 0.1968,
+        "w": 0.0769,
+        "h": 0.0695
+      },
+      "occupancy_priority": [
+        "chips",
+        "all_in_button",
+        "face_down_cards_secondary"
+      ]
+    },
+    "seat_3": {
+      "seat_id": "seat_3",
+      "divider_before": "d4",
+      "divider_after": "d5",
+      "seat_anchor": [
+        936.5,
+        174.2
+      ],
+      "seat_anchor_normalized": [
+        0.7316,
+        0.2423
+      ],
+      "seat_wedge_polygon": [
+        [
+          851,
+          112
+        ],
+        [
+          1089,
+          112
+        ],
+        [
+          1000,
+          244
+        ],
+        [
+          806,
+          229
+        ]
+      ],
+      "seat_wedge_polygon_normalized": [
+        [
+          0.6648,
+          0.1558
+        ],
+        [
+          0.8508,
+          0.1558
+        ],
+        [
+          0.7812,
+          0.3394
+        ],
+        [
+          0.6297,
+          0.3185
+        ]
+      ],
+      "player_area": {
+        "x": 806,
+        "y": 112,
+        "w": 283,
+        "h": 132
+      },
+      "player_area_normalized": {
+        "x": 0.6297,
+        "y": 0.1558,
+        "w": 0.2211,
+        "h": 0.1836
+      },
+      "chip_zone": {
+        "x": 851.3,
+        "y": 135.8,
+        "w": 192.4,
+        "h": 84.5
+      },
+      "chip_zone_normalized": {
+        "x": 0.6651,
+        "y": 0.1889,
+        "w": 0.1503,
+        "h": 0.1175
+      },
+      "card_presence_zone": {
+        "x": 882.4,
+        "y": 151.6,
+        "w": 130.2,
+        "h": 52.8
+      },
+      "card_presence_zone_normalized": {
+        "x": 0.6894,
+        "y": 0.2108,
+        "w": 0.1017,
+        "h": 0.0734
+      },
+      "occupancy_priority": [
+        "chips",
+        "all_in_button",
+        "face_down_cards_secondary"
+      ]
+    },
+    "seat_4": {
+      "seat_id": "seat_4",
+      "divider_before": "d5",
+      "divider_after": "d6",
+      "seat_anchor": [
+        1091.0,
+        267.5
+      ],
+      "seat_anchor_normalized": [
+        0.8523,
+        0.372
+      ],
+      "seat_wedge_polygon": [
+        [
+          1089,
+          112
+        ],
+        [
+          1211,
+          357
+        ],
+        [
+          1064,
+          357
+        ],
+        [
+          1000,
+          244
+        ]
+      ],
+      "seat_wedge_polygon_normalized": [
+        [
+          0.8508,
+          0.1558
+        ],
+        [
+          0.9461,
+          0.4965
+        ],
+        [
+          0.8313,
+          0.4965
+        ],
+        [
+          0.7812,
+          0.3394
+        ]
+      ],
+      "player_area": {
+        "x": 1000,
+        "y": 112,
+        "w": 211,
+        "h": 245
+      },
+      "player_area_normalized": {
+        "x": 0.7812,
+        "y": 0.1558,
+        "w": 0.1648,
+        "h": 0.3408
+      },
+      "chip_zone": {
+        "x": 1033.8,
+        "y": 156.1,
+        "w": 143.5,
+        "h": 156.8
+      },
+      "chip_zone_normalized": {
+        "x": 0.8077,
+        "y": 0.2171,
+        "w": 0.1121,
+        "h": 0.2181
+      },
+      "card_presence_zone": {
+        "x": 1057.0,
+        "y": 185.5,
+        "w": 97.1,
+        "h": 98.0
+      },
+      "card_presence_zone_normalized": {
+        "x": 0.8258,
+        "y": 0.258,
+        "w": 0.0759,
+        "h": 0.1363
+      },
+      "occupancy_priority": [
+        "chips",
+        "all_in_button",
+        "face_down_cards_secondary"
+      ]
+    },
+    "seat_5": {
+      "seat_id": "seat_5",
+      "divider_before": "d6",
+      "divider_after": "d7",
+      "seat_anchor": [
+        1085.8,
+        449.5
+      ],
+      "seat_anchor_normalized": [
+        0.8483,
+        0.6252
+      ],
+      "seat_wedge_polygon": [
+        [
+          1211,
+          357
+        ],
+        [
+          1073,
+          612
+        ],
+        [
+          995,
+          472
+        ],
+        [
+          1064,
+          357
+        ]
+      ],
+      "seat_wedge_polygon_normalized": [
+        [
+          0.9461,
+          0.4965
+        ],
+        [
+          0.8383,
+          0.8512
+        ],
+        [
+          0.7773,
+          0.6565
+        ],
+        [
+          0.8313,
+          0.4965
+        ]
+      ],
+      "player_area": {
+        "x": 995,
+        "y": 357,
+        "w": 216,
+        "h": 255
+      },
+      "player_area_normalized": {
+        "x": 0.7773,
+        "y": 0.4965,
+        "w": 0.1688,
+        "h": 0.3547
+      },
+      "chip_zone": {
+        "x": 1029.6,
+        "y": 402.9,
+        "w": 146.9,
+        "h": 163.2
+      },
+      "chip_zone_normalized": {
+        "x": 0.8044,
+        "y": 0.5604,
+        "w": 0.1148,
+        "h": 0.227
+      },
+      "card_presence_zone": {
+        "x": 1053.3,
+        "y": 433.5,
+        "w": 99.4,
+        "h": 102.0
+      },
+      "card_presence_zone_normalized": {
+        "x": 0.8229,
+        "y": 0.6029,
+        "w": 0.0777,
+        "h": 0.1419
+      },
+      "occupancy_priority": [
+        "chips",
+        "all_in_button",
+        "face_down_cards_secondary"
+      ]
+    },
+    "seat_6": {
+      "seat_id": "seat_6",
+      "divider_before": "d7",
+      "divider_after": "d8",
+      "seat_anchor": [
+        930.8,
+        546.8
+      ],
+      "seat_anchor_normalized": [
+        0.7272,
+        0.7605
+      ],
+      "seat_wedge_polygon": [
+        [
+          1073,
+          612
+        ],
+        [
+          849,
+          614
+        ],
+        [
+          806,
+          489
+        ],
+        [
+          995,
+          472
+        ]
+      ],
+      "seat_wedge_polygon_normalized": [
+        [
+          0.8383,
+          0.8512
+        ],
+        [
+          0.6633,
+          0.854
+        ],
+        [
+          0.6297,
+          0.6801
+        ],
+        [
+          0.7773,
+          0.6565
+        ]
+      ],
+      "player_area": {
+        "x": 806,
+        "y": 472,
+        "w": 267,
+        "h": 142
+      },
+      "player_area_normalized": {
+        "x": 0.6297,
+        "y": 0.6565,
+        "w": 0.2086,
+        "h": 0.1975
+      },
+      "chip_zone": {
+        "x": 848.7,
+        "y": 497.6,
+        "w": 181.6,
+        "h": 90.9
+      },
+      "chip_zone_normalized": {
+        "x": 0.663,
+        "y": 0.6921,
+        "w": 0.1419,
+        "h": 0.1264
+      },
+      "card_presence_zone": {
+        "x": 878.1,
+        "y": 514.6,
+        "w": 122.8,
+        "h": 56.8
+      },
+      "card_presence_zone_normalized": {
+        "x": 0.686,
+        "y": 0.7157,
+        "w": 0.0959,
+        "h": 0.079
+      },
+      "occupancy_priority": [
+        "chips",
+        "all_in_button",
+        "face_down_cards_secondary"
+      ]
+    },
+    "seat_7": {
+      "seat_id": "seat_7",
+      "divider_before": "d8",
+      "divider_after": "d9",
+      "seat_anchor": [
+        675.5,
+        551.2
+      ],
+      "seat_anchor_normalized": [
+        0.5277,
+        0.7666
+      ],
+      "seat_wedge_polygon": [
+        [
+          849,
+          614
+        ],
+        [
+          500,
+          613
+        ],
+        [
+          547,
+          489
+        ],
+        [
+          806,
+          489
+        ]
+      ],
+      "seat_wedge_polygon_normalized": [
+        [
+          0.6633,
+          0.854
+        ],
+        [
+          0.3906,
+          0.8526
+        ],
+        [
+          0.4273,
+          0.6801
+        ],
+        [
+          0.6297,
+          0.6801
+        ]
+      ],
+      "player_area": {
+        "x": 500,
+        "y": 489,
+        "w": 349,
+        "h": 125
+      },
+      "player_area_normalized": {
+        "x": 0.3906,
+        "y": 0.6801,
+        "w": 0.2727,
+        "h": 0.1739
+      },
+      "chip_zone": {
+        "x": 555.8,
+        "y": 511.5,
+        "w": 237.3,
+        "h": 80.0
+      },
+      "chip_zone_normalized": {
+        "x": 0.4342,
+        "y": 0.7114,
+        "w": 0.1854,
+        "h": 0.1113
+      },
+      "card_presence_zone": {
+        "x": 594.2,
+        "y": 526.5,
+        "w": 160.5,
+        "h": 50.0
+      },
+      "card_presence_zone_normalized": {
+        "x": 0.4642,
+        "y": 0.7323,
+        "w": 0.1254,
+        "h": 0.0695
+      },
+      "occupancy_priority": [
+        "chips",
+        "all_in_button",
+        "face_down_cards_secondary"
+      ]
+    },
+    "seat_8": {
+      "seat_id": "seat_8",
+      "divider_before": "d9",
+      "divider_after": "d10",
+      "seat_anchor": [
+        396.2,
+        546.0
+      ],
+      "seat_anchor_normalized": [
+        0.3095,
+        0.7594
+      ],
+      "seat_wedge_polygon": [
+        [
+          500,
+          613
+        ],
+        [
+          218,
+          610
+        ],
+        [
+          320,
+          472
+        ],
+        [
+          547,
+          489
+        ]
+      ],
+      "seat_wedge_polygon_normalized": [
+        [
+          0.3906,
+          0.8526
+        ],
+        [
+          0.1703,
+          0.8484
+        ],
+        [
+          0.25,
+          0.6565
+        ],
+        [
+          0.4273,
+          0.6801
+        ]
+      ],
+      "player_area": {
+        "x": 218,
+        "y": 472,
+        "w": 329,
+        "h": 141
+      },
+      "player_area_normalized": {
+        "x": 0.1703,
+        "y": 0.6565,
+        "w": 0.257,
+        "h": 0.1961
+      },
+      "chip_zone": {
+        "x": 270.6,
+        "y": 497.4,
+        "w": 223.7,
+        "h": 90.2
+      },
+      "chip_zone_normalized": {
+        "x": 0.2114,
+        "y": 0.6918,
+        "w": 0.1748,
+        "h": 0.1255
+      },
+      "card_presence_zone": {
+        "x": 306.8,
+        "y": 514.3,
+        "w": 151.3,
+        "h": 56.4
+      },
+      "card_presence_zone_normalized": {
+        "x": 0.2397,
+        "y": 0.7153,
+        "w": 0.1182,
+        "h": 0.0784
+      },
+      "occupancy_priority": [
+        "chips",
+        "all_in_button",
+        "face_down_cards_secondary"
+      ]
+    },
+    "seat_9": {
+      "seat_id": "seat_9",
+      "divider_before": "d10",
+      "divider_after": "d1",
+      "seat_anchor": [
+        272.2,
+        359.5
+      ],
+      "seat_anchor_normalized": [
+        0.2127,
+        0.5
+      ],
+      "seat_wedge_polygon": [
+        [
+          218,
+          610
+        ],
+        [
+          223,
+          112
+        ],
+        [
+          328,
+          244
+        ],
+        [
+          320,
+          472
+        ]
+      ],
+      "seat_wedge_polygon_normalized": [
+        [
+          0.1703,
+          0.8484
+        ],
+        [
+          0.1742,
+          0.1558
+        ],
+        [
+          0.2562,
+          0.3394
+        ],
+        [
+          0.25,
+          0.6565
+        ]
+      ],
+      "player_area": {
+        "x": 218,
+        "y": 112,
+        "w": 110,
+        "h": 498
+      },
+      "player_area_normalized": {
+        "x": 0.1703,
+        "y": 0.1558,
+        "w": 0.0859,
+        "h": 0.6926
+      },
+      "chip_zone": {
+        "x": 235.6,
+        "y": 201.6,
+        "w": 74.8,
+        "h": 318.7
+      },
+      "chip_zone_normalized": {
+        "x": 0.1841,
+        "y": 0.2804,
+        "w": 0.0584,
+        "h": 0.4433
+      },
+      "card_presence_zone": {
+        "x": 247.7,
+        "y": 261.4,
+        "w": 50.6,
+        "h": 199.2
+      },
+      "card_presence_zone_normalized": {
+        "x": 0.1935,
+        "y": 0.3636,
+        "w": 0.0395,
+        "h": 0.2771
+      },
+      "occupancy_priority": [
+        "chips",
+        "all_in_button",
+        "face_down_cards_secondary"
+      ]
+    },
+    "seat_10": {
+      "seat_id": "seat_10",
+      "divider_before": "d1",
+      "divider_after": "d2",
+      "seat_anchor": [
+        355.8,
+        174.5
+      ],
+      "seat_anchor_normalized": [
+        0.278,
+        0.2427
+      ],
+      "seat_wedge_polygon": [
+        [
+          223,
+          112
+        ],
+        [
+          398,
+          112
+        ],
+        [
+          474,
+          230
+        ],
+        [
+          328,
+          244
+        ]
+      ],
+      "seat_wedge_polygon_normalized": [
+        [
+          0.1742,
+          0.1558
+        ],
+        [
+          0.3109,
+          0.1558
+        ],
+        [
+          0.3703,
+          0.3199
+        ],
+        [
+          0.2562,
+          0.3394
+        ]
+      ],
+      "player_area": {
+        "x": 223,
+        "y": 112,
+        "w": 251,
+        "h": 132
+      },
+      "player_area_normalized": {
+        "x": 0.1742,
+        "y": 0.1558,
+        "w": 0.1961,
+        "h": 0.1836
+      },
+      "chip_zone": {
+        "x": 263.2,
+        "y": 135.8,
+        "w": 170.7,
+        "h": 84.5
+      },
+      "chip_zone_normalized": {
+        "x": 0.2056,
+        "y": 0.1889,
+        "w": 0.1334,
+        "h": 0.1175
+      },
+      "card_presence_zone": {
+        "x": 290.8,
+        "y": 151.6,
+        "w": 115.5,
+        "h": 52.8
+      },
+      "card_presence_zone_normalized": {
+        "x": 0.2272,
+        "y": 0.2108,
+        "w": 0.0902,
+        "h": 0.0734
+      },
+      "occupancy_priority": [
+        "chips",
+        "all_in_button",
+        "face_down_cards_secondary"
+      ]
+    }
+  }
+}

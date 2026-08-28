@@ -1,0 +1,68 @@
+name: Claude autofix from Codex findings
+
+# Fires when the codex-review job posts a failing verdict comment.
+# Hard-capped at 5 correction iterations per PR — beyond that it escalates
+# to a human instead of retrying indefinitely.
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: read
+
+jobs:
+  autofix:
+    if: >
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '<!-- codex-verdict -->') &&
+      contains(github.event.comment.body, '"status": "fail"')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Count previous correction attempts
+        id: guard
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: commits } = await github.rest.pulls.listCommits({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            const attempts = commits.filter(c => /\[iteration \d+\/5\]/.test(c.commit.message)).length;
+            core.setOutput('blocked', attempts >= 5);
+
+      - name: Escalate to human after 5 failed attempts
+        if: steps.guard.outputs.blocked == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '5 Korrekturversuche ohne bestandene Codex-Verifikation — Übernahme durch einen Menschen erforderlich.',
+            });
+
+      - uses: actions/checkout@v4
+        if: steps.guard.outputs.blocked != 'true'
+
+      # NOTE: verify the exact input name for the OAuth token against
+      # anthropics/claude-code-action's current README — this repo's API
+      # has changed shape before and may again.
+      - name: Run Claude Code to address findings
+        if: steps.guard.outputs.blocked != 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Read the most recent PR comment containing "<!-- codex-verdict -->".
+            Parse its JSON "findings" array. Fix only what's listed, against
+            the referenced PRD.md requirement (prd_ref). Don't touch anything
+            not listed. Commit as:
+            "fix(review): address finding [iteration N/5]"
+            where N is one higher than the previous iteration commit on this
+            branch. Push to the current PR branch.
+          claude_args: "--max-turns 15"

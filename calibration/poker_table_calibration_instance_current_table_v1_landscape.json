@@ -1,0 +1,375 @@
+{
+  "schema_version": "1.0",
+  "table_model_id": "dopo_10max_calibration_instance_current_table_v1_landscape",
+  "source_image": "/opt/data/cache/images/img_4f4b3352d112.jpg",
+  "image": {
+    "width": 1280,
+    "height": 719,
+    "orientation": "landscape"
+  },
+  "global_geometry": {
+    "outer_rail": {
+      "kind": "capsule_from_4_points",
+      "points": {
+        "top_left": [
+          201,
+          50
+        ],
+        "top_right": [
+          1078,
+          50
+        ],
+        "bottom_right": [
+          1078,
+          670
+        ],
+        "bottom_left": [
+          201,
+          670
+        ]
+      },
+      "points_normalized": {
+        "top_left": [
+          0.157,
+          0.0695
+        ],
+        "top_right": [
+          0.8422,
+          0.0695
+        ],
+        "bottom_right": [
+          0.8422,
+          0.9318
+        ],
+        "bottom_left": [
+          0.157,
+          0.9318
+        ]
+      }
+    },
+    "inner_rail": {
+      "kind": "capsule_from_4_points",
+      "points": {
+        "top_left": [
+          221,
+          94
+        ],
+        "top_right": [
+          1060,
+          94
+        ],
+        "bottom_right": [
+          1060,
+          639
+        ],
+        "bottom_left": [
+          221,
+          639
+        ]
+      },
+      "points_normalized": {
+        "top_left": [
+          0.1727,
+          0.1307
+        ],
+        "top_right": [
+          0.8281,
+          0.1307
+        ],
+        "bottom_right": [
+          0.8281,
+          0.8887
+        ],
+        "bottom_left": [
+          0.1727,
+          0.8887
+        ]
+      }
+    },
+    "action_area": {
+      "kind": "capsule_from_4_points",
+      "points": {
+        "top_left": [
+          351,
+          224
+        ],
+        "top_right": [
+          930,
+          224
+        ],
+        "bottom_right": [
+          930,
+          496
+        ],
+        "bottom_left": [
+          351,
+          496
+        ]
+      },
+      "points_normalized": {
+        "top_left": [
+          0.2742,
+          0.3115
+        ],
+        "top_right": [
+          0.7266,
+          0.3115
+        ],
+        "bottom_right": [
+          0.7266,
+          0.6898
+        ],
+        "bottom_left": [
+          0.2742,
+          0.6898
+        ]
+      }
+    }
+  },
+  "seat_dividers": {
+    "count": 10,
+    "lines": {
+      "d1": {
+        "outer_ring_point": [
+          223,
+          112
+        ],
+        "inner_ring_point": [
+          328,
+          244
+        ],
+        "outer_ring_point_normalized": [
+          0.1742,
+          0.1558
+        ],
+        "inner_ring_point_normalized": [
+          0.2562,
+          0.3394
+        ]
+      },
+      "d2": {
+        "outer_ring_point": [
+          398,
+          112
+        ],
+        "inner_ring_point": [
+          474,
+          230
+        ],
+        "outer_ring_point_normalized": [
+          0.3109,
+          0.1558
+        ],
+        "inner_ring_point_normalized": [
+          0.3703,
+          0.3199
+        ]
+      },
+      "d3": {
+        "outer_ring_point": [
+          637,
+          104
+        ],
+        "inner_ring_point": [
+          639,
+          225
+        ],
+        "outer_ring_point_normalized": [
+          0.4977,
+          0.1446
+        ],
+        "inner_ring_point_normalized": [
+          0.4992,
+          0.3129
+        ]
+      },
+      "d4": {
+        "outer_ring_point": [
+          851,
+          112
+        ],
+        "inner_ring_point": [
+          806,
+          229
+        ],
+        "outer_ring_point_normalized": [
+          0.6648,
+          0.1558
+        ],
+        "inner_ring_point_normalized": [
+          0.6297,
+          0.3185
+        ]
+      },
+      "d5": {
+        "outer_ring_point": [
+          1089,
+          112
+        ],
+        "inner_ring_point": [
+          1000,
+          244
+        ],
+        "outer_ring_point_normalized": [
+          0.8508,
+          0.1558
+        ],
+        "inner_ring_point_normalized": [
+          0.7812,
+          0.3394
+        ]
+      },
+      "d6": {
+        "outer_ring_point": [
+          1211,
+          357
+        ],
+        "inner_ring_point": [
+          1064,
+          357
+        ],
+        "outer_ring_point_normalized": [
+          0.9461,
+          0.4965
+        ],
+        "inner_ring_point_normalized": [
+          0.8313,
+          0.4965
+        ]
+      },
+      "d7": {
+        "outer_ring_point": [
+          1073,
+          612
+        ],
+        "inner_ring_point": [
+          995,
+          472
+        ],
+        "outer_ring_point_normalized": [
+          0.8383,
+          0.8512
+        ],
+        "inner_ring_point_normalized": [
+          0.7773,
+          0.6565
+        ]
+      },
+      "d8": {
+        "outer_ring_point": [
+          849,
+          614
+        ],
+        "inner_ring_point": [
+          806,
+          489
+        ],
+        "outer_ring_point_normalized": [
+          0.6633,
+          0.854
+        ],
+        "inner_ring_point_normalized": [
+          0.6297,
+          0.6801
+        ]
+      },
+      "d9": {
+        "outer_ring_point": [
+          500,
+          613
+        ],
+        "inner_ring_point": [
+          547,
+          489
+        ],
+        "outer_ring_point_normalized": [
+          0.3906,
+          0.8526
+        ],
+        "inner_ring_point_normalized": [
+          0.4273,
+          0.6801
+        ]
+      },
+      "d10": {
+        "outer_ring_point": [
+          218,
+          610
+        ],
+        "inner_ring_point": [
+          320,
+          472
+        ],
+        "outer_ring_point_normalized": [
+          0.1703,
+          0.8484
+        ],
+        "inner_ring_point_normalized": [
+          0.25,
+          0.6565
+        ]
+      }
+    }
+  },
+  "board_zone": {
+    "kind": "isosceles_quadrilateral",
+    "points": {
+      "top_left": [
+        508,
+        268
+      ],
+      "top_right": [
+        774,
+        268
+      ],
+      "bottom_right": [
+        774,
+        378
+      ],
+      "bottom_left": [
+        508,
+        378
+      ]
+    },
+    "points_normalized": {
+      "top_left": [
+        0.3969,
+        0.3727
+      ],
+      "top_right": [
+        0.6047,
+        0.3727
+      ],
+      "bottom_right": [
+        0.6047,
+        0.5257
+      ],
+      "bottom_left": [
+        0.3969,
+        0.5257
+      ]
+    },
+    "logic": {
+      "3_cards": "flop",
+      "4_cards": "turn",
+      "5_cards": "river"
+    }
+  },
+  "dealer_button_tracking": {
+    "allowed_zone": "boundary_band_around_action_area",
+    "position_assignment": "nearest_seat_wedge_boundary_or_nearest_seat_anchor",
+    "notes": [
+      "Dealer button may drift slightly into the action area or slightly into the player wedge.",
+      "Use nearest assignment while remaining in the allowed boundary band around the action area."
+    ]
+  },
+  "table_metadata": {
+    "seat_1_definition": {
+      "seat_divider_before": "d2",
+      "seat_divider_after": "d3",
+      "label": "top_center",
+      "notes": "Provisional default for this image. Changeable later if you want a different numbering origin."
+    },
+    "numbering_direction": "clockwise"
+  }
+}
