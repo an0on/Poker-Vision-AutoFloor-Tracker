@@ -1,0 +1,23 @@
+name: CI
+
+# Tests and build only. Codex review happens locally and manually before
+# opening a PR — see CLAUDE.md "Review before merge".
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: npm ci
+      - name: Run tests
+        run: npm test
+      - name: Build
+        run: npm run build

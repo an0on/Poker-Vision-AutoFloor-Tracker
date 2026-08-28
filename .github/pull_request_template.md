@@ -7,5 +7,5 @@
 
 ## Checklist
 - [ ] Tests pass locally
-- [ ] Codex review shows `"status": "pass"` on the latest commit
+- [ ] Ran `codex review` locally against the diff and addressed its findings
 - [ ] I've read the final diff myself, not just the green checks
