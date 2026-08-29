@@ -12,9 +12,13 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Annotated
 
-from pydantic import AfterValidator, Field
+from pydantic import AfterValidator, Field, model_validator
 
 from poker_vision.schema_base import StrictModel
+
+# Below this, a polygon/matrix is treated as degenerate/singular rather than
+# merely numerically noisy (REQ-11).
+_AREA_EPSILON = 1e-9
 
 
 class PixelPoint(StrictModel):
@@ -31,6 +35,16 @@ class TablePoint(StrictModel):
     y: float
 
 
+def polygon_signed_area(points: list[TablePoint]) -> float:
+    """Shoelace signed area. Near zero means collinear/duplicate points (degenerate)."""
+    total = 0.0
+    n = len(points)
+    for i in range(n):
+        a, b = points[i], points[(i + 1) % n]
+        total += a.x * b.y - b.x * a.y
+    return total / 2.0
+
+
 class TablePolygon(StrictModel):
     """A closed polygon in table coordinates.
 
@@ -39,6 +53,14 @@ class TablePolygon(StrictModel):
     """
 
     points: list[TablePoint] = Field(min_length=3)
+
+    @model_validator(mode="after")
+    def _check_not_degenerate(self) -> TablePolygon:
+        # REQ-11: zero (or near-zero) area means the points are collinear or
+        # duplicated, i.e. the polygon doesn't enclose any actual area.
+        if abs(polygon_signed_area(self.points)) < _AREA_EPSILON:
+            raise ValueError("polygon is degenerate: zero area (collinear or duplicate points)")
+        return self
 
 
 class TableUnit(StrEnum):
@@ -67,3 +89,15 @@ def _check_3x3(value: list[list[float]]) -> list[list[float]]:
 
 
 Matrix3x3 = Annotated[list[list[float]], AfterValidator(_check_3x3)]
+
+
+def matrix3x3_determinant(matrix: Matrix3x3) -> float:
+    (a, b, c), (d, e, f), (g, h, i) = matrix
+    return a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+
+
+def matrix3x3_multiply(left: Matrix3x3, right: Matrix3x3) -> list[list[float]]:
+    return [
+        [sum(left[row][k] * right[k][col] for k in range(3)) for col in range(3)]
+        for row in range(3)
+    ]

@@ -17,12 +17,12 @@ from pydantic import Field, ValidationError
 from poker_vision.calibration.camera import CameraIntrinsics, DistortionCoefficients
 from poker_vision.calibration.geometry import ImageDimensions, TableDimensions
 from poker_vision.calibration.homography import HomographyMatrix
-from poker_vision.calibration.zones import GlobalZones, SeatListModel
+from poker_vision.calibration.zones import CalibrationGeometryModel
 
 CALIBRATION_RUNTIME_SCHEMA_VERSION: Literal["1.0"] = "1.0"
 
 
-class CalibrationRuntime(SeatListModel):
+class CalibrationRuntime(CalibrationGeometryModel):
     schema_version: Literal["1.0"]
     table_id: str = Field(min_length=1)
     based_on: str = Field(
@@ -33,7 +33,6 @@ class CalibrationRuntime(SeatListModel):
     distortion: DistortionCoefficients
     homography: HomographyMatrix
     table: TableDimensions
-    zones: GlobalZones
 
 
 def load_calibration_runtime(path: str | Path) -> CalibrationRuntime:

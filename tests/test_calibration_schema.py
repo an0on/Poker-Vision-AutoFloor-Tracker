@@ -261,3 +261,172 @@ def test_load_calibration_runtime_schema_violation_raises(tmp_path):
     path.write_text(json.dumps(_payload(VALID_RUNTIME, schema_version="2.0")))
     with pytest.raises(ValueError, match="invalid calibration"):
         load_calibration_runtime(path)
+
+
+# --- REQ-11: hard geometric validation on load ------------------------------
+#
+# AC-7: every rule listed in REQ-11 gets its own test, checked against both
+# schemas where the rule applies to both (they share the validation code via
+# `CalibrationGeometryModel`/`TablePolygon`); homography invertibility only
+# applies to CalibrationRuntime, since CalibrationAuthoring stores raw point
+# correspondences rather than a solved matrix.
+
+DEGENERATE_COLLINEAR_POINTS = [
+    {"x": 400, "y": 400},
+    {"x": 500, "y": 400},
+    {"x": 600, "y": 400},
+]
+DEGENERATE_COINCIDENT_POINTS = [
+    {"x": 400, "y": 400},
+    {"x": 400, "y": 400},
+    {"x": 400, "y": 400},
+]
+
+CHIP_ZONE_OUTSIDE_SEAT_1_PLAYER_AREA: dict = {
+    "points": [
+        {"x": 150, "y": 10},
+        {"x": 190, "y": 10},
+        {"x": 190, "y": 50},
+        {"x": 150, "y": 50},
+    ]
+}
+
+# Two seats whose chip_zones overlap each other while each individually
+# stays inside its own player_area (so this isolates the cross-seat overlap
+# rule from the containment rule). Both chip_zones share the same y-range,
+# which is exactly the "flush edge" layout `polygons_overlap` has to detect
+# via more than just vertex-in-polygon checks.
+SEATS_WITH_OVERLAPPING_CHIP_ZONES: list[dict] = [
+    {
+        "seat_id": "seat_1",
+        "zones": {
+            "player_area": {
+                "points": [
+                    {"x": 0, "y": 0},
+                    {"x": 100, "y": 0},
+                    {"x": 100, "y": 100},
+                    {"x": 0, "y": 100},
+                ]
+            },
+            "chip_zone": {
+                "points": [
+                    {"x": 40, "y": 10},
+                    {"x": 90, "y": 10},
+                    {"x": 90, "y": 50},
+                    {"x": 40, "y": 50},
+                ]
+            },
+        },
+    },
+    {
+        "seat_id": "seat_2",
+        "zones": {
+            "player_area": {
+                "points": [
+                    {"x": 50, "y": 0},
+                    {"x": 150, "y": 0},
+                    {"x": 150, "y": 100},
+                    {"x": 50, "y": 100},
+                ]
+            },
+            "chip_zone": {
+                "points": [
+                    {"x": 60, "y": 10},
+                    {"x": 110, "y": 10},
+                    {"x": 110, "y": 50},
+                    {"x": 60, "y": 50},
+                ]
+            },
+        },
+    },
+]
+
+BOARD_ZONE_OVERLAPPING_SEAT_1_CHIP_ZONE: dict = {
+    "points": [
+        {"x": 30, "y": 30},
+        {"x": 70, "y": 30},
+        {"x": 70, "y": 70},
+        {"x": 30, "y": 70},
+    ]
+}
+
+
+@pytest.mark.parametrize(
+    "degenerate_points", [DEGENERATE_COLLINEAR_POINTS, DEGENERATE_COINCIDENT_POINTS]
+)
+def test_authoring_degenerate_polygon_rejected(degenerate_points):
+    payload = _payload(VALID_AUTHORING)
+    payload["zones"]["board_zone"]["points"] = degenerate_points
+    with pytest.raises(ValidationError, match="degenerate"):
+        CalibrationAuthoring.model_validate(payload)
+
+
+def test_runtime_degenerate_polygon_rejected():
+    payload = _payload(VALID_RUNTIME)
+    payload["zones"]["board_zone"]["points"] = DEGENERATE_COLLINEAR_POINTS
+    with pytest.raises(ValidationError, match="degenerate"):
+        CalibrationRuntime.model_validate(payload)
+
+
+def test_authoring_chip_zone_outside_player_area_rejected():
+    payload = _payload(VALID_AUTHORING)
+    payload["seats"][0]["zones"]["chip_zone"] = CHIP_ZONE_OUTSIDE_SEAT_1_PLAYER_AREA
+    with pytest.raises(ValidationError, match="not fully contained"):
+        CalibrationAuthoring.model_validate(payload)
+
+
+def test_runtime_chip_zone_outside_player_area_rejected():
+    payload = _payload(VALID_RUNTIME)
+    payload["seats"][0]["zones"]["chip_zone"] = CHIP_ZONE_OUTSIDE_SEAT_1_PLAYER_AREA
+    with pytest.raises(ValidationError, match="not fully contained"):
+        CalibrationRuntime.model_validate(payload)
+
+
+def test_authoring_chip_zone_overlap_between_seats_rejected():
+    payload = _payload(VALID_AUTHORING, seats=SEATS_WITH_OVERLAPPING_CHIP_ZONES)
+    with pytest.raises(ValidationError, match="chip_zone overlap between seats"):
+        CalibrationAuthoring.model_validate(payload)
+
+
+def test_runtime_chip_zone_overlap_between_seats_rejected():
+    payload = _payload(VALID_RUNTIME, seats=SEATS_WITH_OVERLAPPING_CHIP_ZONES)
+    with pytest.raises(ValidationError, match="chip_zone overlap between seats"):
+        CalibrationRuntime.model_validate(payload)
+
+
+def test_authoring_board_zone_overlaps_chip_zone_rejected():
+    payload = _payload(VALID_AUTHORING)
+    payload["zones"]["board_zone"] = BOARD_ZONE_OVERLAPPING_SEAT_1_CHIP_ZONE
+    with pytest.raises(ValidationError, match="board_zone overlaps chip_zone"):
+        CalibrationAuthoring.model_validate(payload)
+
+
+def test_runtime_board_zone_overlaps_chip_zone_rejected():
+    payload = _payload(VALID_RUNTIME)
+    payload["zones"]["board_zone"] = BOARD_ZONE_OVERLAPPING_SEAT_1_CHIP_ZONE
+    with pytest.raises(ValidationError, match="board_zone overlaps chip_zone"):
+        CalibrationRuntime.model_validate(payload)
+
+
+def test_runtime_homography_singular_forward_rejected():
+    payload = _payload(VALID_RUNTIME)
+    payload["homography"]["forward"] = [
+        [0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0],
+    ]
+    with pytest.raises(ValidationError, match="zero determinant"):
+        CalibrationRuntime.model_validate(payload)
+
+
+def test_runtime_homography_inverse_inconsistent_with_forward_rejected():
+    payload = _payload(VALID_RUNTIME)
+    # Well clear of singular (det=8) but not the actual inverse of an
+    # identity `forward` (which is itself the identity, not 2 * identity).
+    payload["homography"]["inverse"] = [
+        [2.0, 0.0, 0.0],
+        [0.0, 2.0, 0.0],
+        [0.0, 0.0, 2.0],
+    ]
+    with pytest.raises(ValidationError, match="does not satisfy"):
+        CalibrationRuntime.model_validate(payload)
