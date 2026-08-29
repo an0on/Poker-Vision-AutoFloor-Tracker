@@ -13,15 +13,11 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
+
+from poker_vision.schema_base import StrictModel
 
 CONFIG_SCHEMA_VERSION: Literal["1.0"] = "1.0"
-
-
-class StrictModel(BaseModel):
-    """Base model shared by all config sections: unknown fields are hard errors."""
-
-    model_config = ConfigDict(extra="forbid")
 
 
 class DeviceType(StrEnum):
