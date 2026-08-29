@@ -3,7 +3,9 @@ name = "poker-vision"
 version = "0.1.0"
 description = "Local CV pipeline for poker table analysis (seat occupancy, dealer button, board state)"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "pydantic>=2.5",
+]
 
 [dependency-groups]
 dev = [
