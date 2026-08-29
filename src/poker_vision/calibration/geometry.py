@@ -45,6 +45,63 @@ def polygon_signed_area(points: list[TablePoint]) -> float:
     return total / 2.0
 
 
+def _cross(o: TablePoint, a: TablePoint, b: TablePoint) -> float:
+    """Cross product of (a - o) and (b - o); sign gives turn direction at o."""
+    return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+
+
+def _sign(value: float) -> int:
+    if value > _AREA_EPSILON:
+        return 1
+    if value < -_AREA_EPSILON:
+        return -1
+    return 0
+
+
+def _on_segment(p: TablePoint, a: TablePoint, b: TablePoint) -> bool:
+    """True if p is collinear with, and between, a and b (inclusive)."""
+    if _sign(_cross(a, b, p)) != 0:
+        return False
+    return (
+        min(a.x, b.x) - _AREA_EPSILON <= p.x <= max(a.x, b.x) + _AREA_EPSILON
+        and min(a.y, b.y) - _AREA_EPSILON <= p.y <= max(a.y, b.y) + _AREA_EPSILON
+    )
+
+
+def _segments_intersect(p1: TablePoint, p2: TablePoint, p3: TablePoint, p4: TablePoint) -> bool:
+    """True if segment p1-p2 and segment p3-p4 share any point (crossing or touching)."""
+    d1 = _sign(_cross(p3, p4, p1))
+    d2 = _sign(_cross(p3, p4, p2))
+    d3 = _sign(_cross(p1, p2, p3))
+    d4 = _sign(_cross(p1, p2, p4))
+    if d1 != d2 and d3 != d4 and d1 != 0 and d2 != 0 and d3 != 0 and d4 != 0:
+        return True
+    if d1 == 0 and _on_segment(p1, p3, p4):
+        return True
+    if d2 == 0 and _on_segment(p2, p3, p4):
+        return True
+    if d3 == 0 and _on_segment(p3, p1, p2):
+        return True
+    return d4 == 0 and _on_segment(p4, p1, p2)
+
+
+def _is_simple_polygon(points: list[TablePoint]) -> bool:
+    """False if any two non-adjacent edges touch or cross.
+
+    Point-in-polygon, containment and overlap (see `topology.py`) are only
+    well-defined for simple polygons; a self-intersecting "bowtie" can have
+    nonzero net (shoelace) area, so it isn't caught by the area check alone.
+    """
+    n = len(points)
+    for i in range(n):
+        for j in range(i + 1, n):
+            if j == i + 1 or (i == 0 and j == n - 1):
+                continue  # adjacent edges legitimately share one endpoint
+            if _segments_intersect(points[i], points[(i + 1) % n], points[j], points[(j + 1) % n]):
+                return False
+    return True
+
+
 class TablePolygon(StrictModel):
     """A closed polygon in table coordinates.
 
@@ -55,11 +112,16 @@ class TablePolygon(StrictModel):
     points: list[TablePoint] = Field(min_length=3)
 
     @model_validator(mode="after")
-    def _check_not_degenerate(self) -> TablePolygon:
+    def _check_valid_polygon(self) -> TablePolygon:
         # REQ-11: zero (or near-zero) area means the points are collinear or
         # duplicated, i.e. the polygon doesn't enclose any actual area.
         if abs(polygon_signed_area(self.points)) < _AREA_EPSILON:
             raise ValueError("polygon is degenerate: zero area (collinear or duplicate points)")
+        # REQ-11: a self-intersecting polygon isn't "closed" in any usable
+        # sense — topology.py's containment/overlap checks assume simple
+        # polygons, and ray casting has no well-defined answer otherwise.
+        if not _is_simple_polygon(self.points):
+            raise ValueError("polygon is invalid: edges self-intersect (not a simple polygon)")
         return self
 
 
@@ -89,11 +151,6 @@ def _check_3x3(value: list[list[float]]) -> list[list[float]]:
 
 
 Matrix3x3 = Annotated[list[list[float]], AfterValidator(_check_3x3)]
-
-
-def matrix3x3_determinant(matrix: Matrix3x3) -> float:
-    (a, b, c), (d, e, f), (g, h, i) = matrix
-    return a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
 
 
 def matrix3x3_multiply(left: Matrix3x3, right: Matrix3x3) -> list[list[float]]:

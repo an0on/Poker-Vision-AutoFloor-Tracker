@@ -3,10 +3,11 @@
 Pure-Python 2D polygon geometry (no numpy/shapely dependency): point-in-
 polygon via ray casting, segment intersection, and the two predicates
 `polygon_contains`/`polygons_overlap` that `zones.py` uses to enforce zone
-topology. Zones are hand-authored (REQ-10), typically small simple
-(non-self-intersecting) quadrilaterals, possibly concave seat wedges around
-a round table — these functions make no convexity assumption but do assume
-simple polygons, matching `TablePolygon`'s own contract.
+topology. Zones are hand-authored (REQ-10), typically small quadrilaterals,
+possibly concave seat wedges around a round table — these functions make no
+convexity assumption, but do rely on polygons being simple
+(non-self-intersecting), which `TablePolygon`'s own validator enforces
+(REQ-11, see `geometry.py`).
 """
 
 from __future__ import annotations

@@ -415,18 +415,59 @@ def test_runtime_homography_singular_forward_rejected():
         [0.0, 0.0, 0.0],
         [0.0, 0.0, 0.0],
     ]
-    with pytest.raises(ValidationError, match="zero determinant"):
+    # `inverse` is left as the identity (from VALID_RUNTIME): a singular
+    # forward can never round-trip with *any* inverse, so this is rejected
+    # regardless of what `inverse` happens to hold.
+    with pytest.raises(ValidationError, match="does not equal the identity matrix"):
         CalibrationRuntime.model_validate(payload)
 
 
 def test_runtime_homography_inverse_inconsistent_with_forward_rejected():
     payload = _payload(VALID_RUNTIME)
-    # Well clear of singular (det=8) but not the actual inverse of an
-    # identity `forward` (which is itself the identity, not 2 * identity).
+    # `forward` is a perfectly good (identity) matrix, but this `inverse` is
+    # not *its* inverse (identity, not 2 * identity) — a stale/wrong value.
     payload["homography"]["inverse"] = [
         [2.0, 0.0, 0.0],
         [0.0, 2.0, 0.0],
         [0.0, 0.0, 2.0],
     ]
-    with pytest.raises(ValidationError, match="does not satisfy"):
+    with pytest.raises(ValidationError, match="does not equal the identity matrix"):
+        CalibrationRuntime.model_validate(payload)
+
+
+def test_runtime_homography_small_scale_still_accepted():
+    # A homography is only defined up to a nonzero scalar; a small-but-valid
+    # scaling must not be rejected as "singular" (regression test for a
+    # since-removed absolute-determinant check, which was scale-sensitive:
+    # det of a 3x3 matrix scales with the cube of the scaling factor, so
+    # det(0.0001 * I) = 1e-12 — far below what any fixed epsilon would call
+    # "not singular" even though this pair round-trips exactly).
+    payload = _payload(VALID_RUNTIME)
+    payload["homography"] = {
+        "forward": [[0.0001, 0.0, 0.0], [0.0, 0.0001, 0.0], [0.0, 0.0, 0.0001]],
+        "inverse": [[10000.0, 0.0, 0.0], [0.0, 10000.0, 0.0], [0.0, 0.0, 10000.0]],
+    }
+    calibration = CalibrationRuntime.model_validate(payload)
+    assert calibration.homography.forward[0][0] == 0.0001
+
+
+SELF_INTERSECTING_BOWTIE_POINTS = [
+    {"x": 400, "y": 400},
+    {"x": 404, "y": 404},
+    {"x": 404, "y": 400},
+    {"x": 400, "y": 410},
+]
+
+
+def test_authoring_self_intersecting_polygon_rejected():
+    payload = _payload(VALID_AUTHORING)
+    payload["zones"]["board_zone"]["points"] = SELF_INTERSECTING_BOWTIE_POINTS
+    with pytest.raises(ValidationError, match="self-intersect"):
+        CalibrationAuthoring.model_validate(payload)
+
+
+def test_runtime_self_intersecting_polygon_rejected():
+    payload = _payload(VALID_RUNTIME)
+    payload["zones"]["board_zone"]["points"] = SELF_INTERSECTING_BOWTIE_POINTS
+    with pytest.raises(ValidationError, match="self-intersect"):
         CalibrationRuntime.model_validate(payload)

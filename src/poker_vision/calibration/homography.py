@@ -14,13 +14,10 @@ from poker_vision.calibration.geometry import (
     Matrix3x3,
     PixelPoint,
     TablePoint,
-    matrix3x3_determinant,
     matrix3x3_multiply,
 )
 from poker_vision.schema_base import StrictModel
 
-# Determinant magnitude below this is treated as singular (REQ-11).
-_DETERMINANT_EPSILON = 1e-9
 # Tolerance for forward @ inverse == identity (REQ-11); generous relative to
 # double-precision round-trip error, tight enough to catch a wrong/stale
 # inverse.
@@ -54,22 +51,25 @@ class HomographyMatrix(StrictModel):
 
     @model_validator(mode="after")
     def _check_invertible(self) -> HomographyMatrix:
-        # REQ-11: a singular forward matrix has no real inverse, so whatever
-        # is stored in `inverse` would be meaningless.
-        if abs(matrix3x3_determinant(self.forward)) < _DETERMINANT_EPSILON:
-            raise ValueError("homography is not invertible: forward matrix has zero determinant")
-
-        # REQ-11 also covers the stored `inverse` itself being wrong/stale
-        # (e.g. left over from a different `forward`) — pipeline code trusts
-        # it as-is (see class docstring) rather than re-solving it, so a
-        # mismatch here would silently corrupt the debug overlay.
+        # REQ-11: forward @ inverse must be the identity matrix. This is
+        # deliberately not a separate `det(forward) != 0` check: a
+        # homography is only defined up to scale, and a 3x3 determinant
+        # scales with the cube of that factor, so an absolute-value
+        # threshold on it would reject validly-scaled (if unusually small)
+        # matrices. The round-trip check below doesn't have that problem
+        # (rescaling forward and inverse by reciprocal factors leaves their
+        # product unchanged) and is strictly stronger anyway: if `forward`
+        # were truly singular, no `inverse` could satisfy this equation
+        # (det(forward) * det(inverse) would have to equal det(identity) =
+        # 1, which is impossible when det(forward) = 0), so this alone
+        # already proves `forward` is invertible.
         product = matrix3x3_multiply(self.forward, self.inverse)
         for row in range(3):
             for col in range(3):
                 expected = 1.0 if row == col else 0.0
                 if abs(product[row][col] - expected) > _IDENTITY_EPSILON:
                     raise ValueError(
-                        "homography is not invertible: inverse does not satisfy "
-                        "forward @ inverse = identity"
+                        "homography is not invertible: forward @ inverse does not "
+                        "equal the identity matrix"
                     )
         return self
