@@ -163,3 +163,4 @@ Damit ist das Gate aus REQ-0.9 passiert; die Arbeit an REQ-1 ff. ist ab hier zul
 - Automatische Rekalibrierung oder Drift-Erkennung gegen Referenzmarker (nur manuelle Validierung per CLI).
 - Mehrere Tische, mehrere Kameras.
 - In Phase 0 zusätzlich: Homographie, Zonen, Tracking, Hysterese, Events, Export – alles erst ab v0.1.
+- All-in-Button als zweites Seat-Occupancy-Signal und eine granularere Hand-State-Machine (preflop/showdown/waiting_for_new_hand/hand_closed) — ursprünglich in `AGENTS.md` skizziert, siehe `docs/future-features.md` für den Stand dieser Planung.
