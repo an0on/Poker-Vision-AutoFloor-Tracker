@@ -63,12 +63,38 @@ def test_overlap_partial_with_vertex_inside():
 def test_overlap_coincident_polygons():
     # E.g. a chip_zone accidentally copy-pasted for two different seats:
     # every vertex/edge-midpoint of each lands exactly on the other's
-    # boundary and every edge pair is collinear rather than crossing, so
-    # neither the vertex/midpoint-inside check nor the edge-crossing check
-    # alone would notice — this is exactly why `_centroid` is sampled too.
+    # boundary and every edge pair is collinear rather than crossing, so a
+    # sampling heuristic would see nothing but touching.
     a = _polygon((10, 10), (50, 10), (50, 50), (10, 50))
     b = _polygon((10, 10), (50, 10), (50, 50), (10, 50))
     assert polygons_overlap(a, b) is True
+
+
+U_SHAPE = _polygon((0, 0), (4, 0), (4, 4), (3, 4), (3, 1), (1, 1), (1, 4), (0, 4))
+
+
+def test_overlap_coincident_concave_polygons():
+    # A concave "U"/comb shape whose own vertex-average centroid falls
+    # *outside* it (in the notch) — any sampling heuristic keyed on a
+    # vertex/midpoint/centroid "representative point" can miss this exact
+    # case; the triangulation-based implementation doesn't rely on picking
+    # a representative point at all.
+    assert polygons_overlap(U_SHAPE, U_SHAPE) is True
+
+
+def test_overlap_rectangle_in_concave_notch_is_not_overlap():
+    # U_SHAPE's notch (the area cut out of the top, x in [1, 3] / y in
+    # [1, 4]) isn't part of the polygon at all — a rectangle sitting
+    # entirely in that notch must not register as overlapping it.
+    in_notch = _polygon((1.5, 2), (2.5, 2), (2.5, 3), (1.5, 3))
+    assert polygons_overlap(U_SHAPE, in_notch) is False
+
+
+def test_overlap_rectangle_straddling_concave_leg_overlaps():
+    # Half of this rectangle sits on U_SHAPE's solid left leg (x in [0, 1]),
+    # half sits in the notch — genuine partial overlap with a concave shape.
+    on_leg = _polygon((0.5, 2), (1.5, 2), (1.5, 3), (0.5, 3))
+    assert polygons_overlap(U_SHAPE, on_leg) is True
 
 
 def test_overlap_one_fully_inside_other():

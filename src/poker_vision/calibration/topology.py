@@ -8,11 +8,24 @@ possibly concave seat wedges around a round table — these functions make no
 convexity assumption, but do rely on polygons being simple
 (non-self-intersecting), which `TablePolygon`'s own validator enforces
 (REQ-11, see `geometry.py`).
+
+`polygons_overlap` decomposes both polygons into triangles (ear clipping,
+which always succeeds for a simple polygon) and tests every triangle pair
+for positive-area overlap via the separating-axis theorem. This isn't the
+simplest possible approach, but a sampling heuristic (test vertices/edge-
+midpoints for strict containment, plus edge-crossing) provably cannot work
+in general: for two coincident (or merely similar) *concave* polygons,
+every sampled point can land exactly on the other polygon's boundary and
+every edge pair can be collinear rather than crossing, even though the
+polygons fully overlap. Triangulation sidesteps this because triangles are
+always convex, and SAT is exact (not sample-based) for convex shapes.
 """
 
 from __future__ import annotations
 
-from poker_vision.calibration.geometry import TablePoint, TablePolygon
+import math
+
+from poker_vision.calibration.geometry import TablePoint, TablePolygon, polygon_signed_area
 
 # Absolute tolerance for "is this value zero" in cross-product/orientation
 # tests below. Table coordinates are authored, not measured, so points
@@ -87,12 +100,6 @@ def _point_inside_or_on(point: TablePoint, polygon_points: list[TablePoint]) -> 
     return _point_on_boundary(point, polygon_points) or _ray_cast_inside(point, polygon_points)
 
 
-def _point_strictly_inside(point: TablePoint, polygon_points: list[TablePoint]) -> bool:
-    if _point_on_boundary(point, polygon_points):
-        return False
-    return _ray_cast_inside(point, polygon_points)
-
-
 def _edge_midpoints(points: list[TablePoint]) -> list[TablePoint]:
     """Midpoint of every edge, in addition to the vertices themselves.
 
@@ -111,22 +118,117 @@ def _edge_midpoints(points: list[TablePoint]) -> list[TablePoint]:
     return midpoints
 
 
-def _centroid(points: list[TablePoint]) -> TablePoint:
-    """Plain average of the vertices (not the area-weighted centroid).
+def _triangle_strictly_contains(
+    a: TablePoint, b: TablePoint, c: TablePoint, p: TablePoint
+) -> bool:
+    """True if p is strictly inside triangle a-b-c (works for either winding)."""
+    d1 = _sign(_cross(a, b, p))
+    d2 = _sign(_cross(b, c, p))
+    d3 = _sign(_cross(c, a, p))
+    if d1 == 0 or d2 == 0 or d3 == 0:
+        return False
+    return d1 == d2 == d3
 
-    For a convex polygon this is guaranteed to land strictly inside it (a
-    convex combination of a convex set's own points stays in that set) —
-    used as one more overlap-detection sample so two coincident or
-    near-coincident polygons (e.g. a chip_zone copy-pasted for two seats)
-    are still caught even though every vertex/edge-midpoint sample then
-    lands exactly on the other polygon's boundary and no edge properly
-    crosses (they're collinear, not transversal). Doesn't help for a
-    pathologically concave polygon whose own vertex-average happens to fall
-    outside it, but that's a much rarer shape for a hand-authored zone than
-    an accidental exact duplicate.
+
+def _is_ear(polygon: list[TablePoint], index: int, orientation: int) -> bool:
+    """True if polygon[index] is currently a clippable "ear" tip.
+
+    An ear tip must turn the same way as the polygon's overall winding (not
+    reflex, not collinear) and its closing triangle must not contain any
+    other vertex of the polygon — otherwise "clipping" it would cut off
+    part of the polygon that isn't actually this triangle.
     """
-    n = len(points)
-    return TablePoint(x=sum(p.x for p in points) / n, y=sum(p.y for p in points) / n)
+    n = len(polygon)
+    prev_p = polygon[(index - 1) % n]
+    curr_p = polygon[index]
+    next_p = polygon[(index + 1) % n]
+    if _sign(_cross(prev_p, curr_p, next_p)) != orientation:
+        return False
+    skip = {(index - 1) % n, index, (index + 1) % n}
+    for j, point in enumerate(polygon):
+        if j in skip:
+            continue
+        if _triangle_strictly_contains(prev_p, curr_p, next_p, point) or _on_segment(
+            point, prev_p, next_p
+        ):
+            return False
+    return True
+
+
+def _triangulate(points: list[TablePoint]) -> list[tuple[TablePoint, TablePoint, TablePoint]]:
+    """Ear-clipping triangulation. Works for any simple polygon, convex or concave.
+
+    Every simple polygon with n >= 4 vertices has at least one ear (a
+    classical result), so repeatedly clipping one always terminates in
+    exactly n - 2 triangles that exactly tile the polygon.
+    """
+    remaining = list(points)
+    orientation = _sign(polygon_signed_area(points))
+    triangles: list[tuple[TablePoint, TablePoint, TablePoint]] = []
+    while len(remaining) > 3:
+        n = len(remaining)
+        for i in range(n):
+            if _is_ear(remaining, i, orientation):
+                prev_p = remaining[(i - 1) % n]
+                curr_p = remaining[i]
+                next_p = remaining[(i + 1) % n]
+                triangles.append((prev_p, curr_p, next_p))
+                del remaining[i]
+                break
+        else:
+            # A genuinely simple polygon always has a clippable ear; bail
+            # out rather than loop forever if float noise ever prevents
+            # finding one (leaves this triangulation incomplete, which
+            # only makes `polygons_overlap` under-detect, never over-).
+            break
+    if len(remaining) == 3:
+        triangles.append((remaining[0], remaining[1], remaining[2]))
+    return triangles
+
+
+def _unit_edge_normals(
+    triangle: tuple[TablePoint, TablePoint, TablePoint],
+) -> list[tuple[float, float]]:
+    """Unit-length outward-ish normal of each edge — the SAT candidate axes for a triangle."""
+    normals = []
+    n = len(triangle)
+    for i in range(n):
+        a, b = triangle[i], triangle[(i + 1) % n]
+        dx, dy = b.x - a.x, b.y - a.y
+        length = math.hypot(dx, dy)
+        if length < _EPSILON:
+            continue  # zero-length edge; TablePolygon's own checks rule this out already
+        normals.append((-dy / length, dx / length))
+    return normals
+
+
+def _project_onto_axis(
+    points: tuple[TablePoint, ...], axis: tuple[float, float]
+) -> tuple[float, float]:
+    ax, ay = axis
+    values = [p.x * ax + p.y * ay for p in points]
+    return min(values), max(values)
+
+
+def _triangles_share_positive_area(
+    t1: tuple[TablePoint, TablePoint, TablePoint], t2: tuple[TablePoint, TablePoint, TablePoint]
+) -> bool:
+    """Separating-axis test, but for *positive-area* overlap rather than mere touching.
+
+    Two convex shapes are disjoint (SAT) iff some edge-normal axis has their
+    projections cleanly separated. Using `<=` here (instead of the usual
+    strict `<`) additionally rules out projections that only *touch* along
+    an axis — if that happens for any axis, the shapes can share at most a
+    lower-dimensional boundary (an edge or a point) there, not a 2D region,
+    so the intersection has zero area even though the shapes do meet.
+    """
+    for axis in _unit_edge_normals(t1) + _unit_edge_normals(t2):
+        min1, max1 = _project_onto_axis(t1, axis)
+        min2, max2 = _project_onto_axis(t2, axis)
+        overlap_length = min(max1, max2) - max(min1, min2)
+        if overlap_length <= _EPSILON:
+            return False
+    return True
 
 
 def polygon_contains(outer: TablePolygon, inner: TablePolygon) -> bool:
@@ -152,20 +254,12 @@ def polygons_overlap(a: TablePolygon, b: TablePolygon) -> bool:
     """True if `a` and `b` share a positive-area region.
 
     Merely touching (a shared edge or vertex, no interior overlap) is not
-    considered an overlap.
+    considered an overlap. Exact (triangulation + separating-axis test),
+    not a sampling heuristic — see the module docstring for why that
+    distinction matters for concave zones.
     """
-    a_points, b_points = a.points, b.points
-    a_samples = a_points + _edge_midpoints(a_points) + [_centroid(a_points)]
-    b_samples = b_points + _edge_midpoints(b_points) + [_centroid(b_points)]
-    if any(_point_strictly_inside(p, b_points) for p in a_samples):
-        return True
-    if any(_point_strictly_inside(p, a_points) for p in b_samples):
-        return True
-    n_a, n_b = len(a_points), len(b_points)
-    for i in range(n_a):
-        p1, p2 = a_points[i], a_points[(i + 1) % n_a]
-        for j in range(n_b):
-            p3, p4 = b_points[j], b_points[(j + 1) % n_b]
-            if _segments_properly_intersect(p1, p2, p3, p4):
-                return True
-    return False
+    triangles_a = _triangulate(a.points)
+    triangles_b = _triangulate(b.points)
+    return any(
+        _triangles_share_positive_area(ta, tb) for ta in triangles_a for tb in triangles_b
+    )
