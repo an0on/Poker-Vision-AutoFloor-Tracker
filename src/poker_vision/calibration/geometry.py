@@ -103,6 +103,10 @@ def _is_simple_polygon(points: list[TablePoint]) -> bool:
     return True
 
 
+def _points_coincide(a: TablePoint, b: TablePoint) -> bool:
+    return abs(a.x - b.x) < _AREA_EPSILON and abs(a.y - b.y) < _AREA_EPSILON
+
+
 def _adjacent_edges_are_valid(prev: TablePoint, curr: TablePoint, next_: TablePoint) -> bool:
     """False if edge prev->curr and edge curr->next overlap along more than their shared point.
 
@@ -111,7 +115,7 @@ def _adjacent_edges_are_valid(prev: TablePoint, curr: TablePoint, next_: TablePo
     next_, a zero-length edge) or a backtrack (prev, curr, next_ collinear
     with next_ heading back towards prev) needs its own direct check.
     """
-    if (prev.x == curr.x and prev.y == curr.y) or (curr.x == next_.x and curr.y == next_.y):
+    if _points_coincide(prev, curr) or _points_coincide(curr, next_):
         return False
     if _sign(_cross(prev, curr, next_)) != 0:
         return True  # not collinear, so can't overlap beyond the shared point

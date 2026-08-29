@@ -385,11 +385,25 @@ BACKTRACKING_EDGE_POINTS = [
     {"x": 480, "y": 400},
     {"x": 480, "y": 500},
 ]
+# Not an exact duplicate, but closer than any real authored zone dimension
+# would ever land by coincidence — the duplicate check uses the same
+# epsilon tolerance as the rest of the module's "is this zero" decisions,
+# not exact float equality, so this must be caught too.
+NEAR_DUPLICATE_CONSECUTIVE_VERTEX_POINTS = [
+    {"x": 400, "y": 400},
+    {"x": 500, "y": 400},
+    {"x": 500.0000000001, "y": 400},
+    {"x": 500, "y": 500},
+    {"x": 400, "y": 500},
+]
+ADJACENT_EDGE_VIOLATIONS = [
+    DUPLICATE_CONSECUTIVE_VERTEX_POINTS,
+    BACKTRACKING_EDGE_POINTS,
+    NEAR_DUPLICATE_CONSECUTIVE_VERTEX_POINTS,
+]
 
 
-@pytest.mark.parametrize(
-    "invalid_points", [DUPLICATE_CONSECUTIVE_VERTEX_POINTS, BACKTRACKING_EDGE_POINTS]
-)
+@pytest.mark.parametrize("invalid_points", ADJACENT_EDGE_VIOLATIONS)
 def test_authoring_adjacent_edges_overlap_rejected(invalid_points):
     payload = _payload(VALID_AUTHORING)
     payload["zones"]["board_zone"]["points"] = invalid_points
@@ -397,9 +411,10 @@ def test_authoring_adjacent_edges_overlap_rejected(invalid_points):
         CalibrationAuthoring.model_validate(payload)
 
 
-def test_runtime_adjacent_edges_overlap_rejected():
+@pytest.mark.parametrize("invalid_points", ADJACENT_EDGE_VIOLATIONS)
+def test_runtime_adjacent_edges_overlap_rejected(invalid_points):
     payload = _payload(VALID_RUNTIME)
-    payload["zones"]["board_zone"]["points"] = DUPLICATE_CONSECUTIVE_VERTEX_POINTS
+    payload["zones"]["board_zone"]["points"] = invalid_points
     with pytest.raises(ValidationError, match="adjacent edges overlap"):
         CalibrationRuntime.model_validate(payload)
 
@@ -509,6 +524,24 @@ def test_runtime_homography_small_scale_still_accepted():
     }
     calibration = CalibrationRuntime.model_validate(payload)
     assert calibration.homography.forward[0][0] == 0.0001
+
+
+def test_runtime_homography_general_matrix_scale_equivalence_accepted():
+    # The scaled-identity case above is diagonal, hence a bit too easy: this
+    # uses a general (non-diagonal, hand-verified: H @ H_inv == I exactly)
+    # homography and scales `forward`/`inverse` by reciprocal factors, to
+    # confirm the round-trip check is scale-invariant for a realistic
+    # (rotation/translation/perspective-shaped) matrix, not just a trivial
+    # scaled multiple of the identity.
+    h = [[2.0, 1.0, 3.0], [0.0, 1.0, 4.0], [0.0, 0.0, 1.0]]
+    h_inv = [[0.5, -0.5, 0.5], [0.0, 1.0, -4.0], [0.0, 0.0, 1.0]]
+    payload = _payload(VALID_RUNTIME)
+    payload["homography"] = {
+        "forward": [[v * 1e-6 for v in row] for row in h],
+        "inverse": [[v * 1e6 for v in row] for row in h_inv],
+    }
+    calibration = CalibrationRuntime.model_validate(payload)
+    assert calibration.homography.forward[0][0] == 2e-6
 
 
 def test_runtime_homography_overflow_to_nan_rejected():
