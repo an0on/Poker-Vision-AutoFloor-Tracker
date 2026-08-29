@@ -1,2 +1,10 @@
 backups/
 .DS_Store
+
+# Pretrained model weights (auto-downloaded by ultralytics)
+*.pt
+__pycache__/
+
+# Raw capture data (frames are never versioned, see PRD REQ-34)
+data/
+pr.diff
