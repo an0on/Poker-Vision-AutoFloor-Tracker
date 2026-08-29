@@ -26,8 +26,7 @@ Codex acts as a second, independent reviewer — run locally and manually,
 not as an automated CI gate:
 
 ```bash
-git diff main...HEAD > pr.diff
-codex review --diff pr.diff --context PRD.md
+codex review --base main
 ```
 
 This uses your ChatGPT subscription login (`codex login`), not an API key —
