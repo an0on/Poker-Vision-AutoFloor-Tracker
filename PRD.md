@@ -29,6 +29,28 @@
 - AC-0.6 (REQ-0.8): Bild ohne eines der beiden Objekte → Abbruch mit Meldung, keine Ausgabedatei.
 - AC-0.7 (REQ-0.9): User hat das Ergebnisbild gesichtet und die Phase explizit freigegeben (Vermerk in PRD.md mit Datum).
 
+#### Phase-0-Freigabe
+
+**Status: freigegeben am 2026-08-29 durch den Repo-Owner (an0on).**
+
+Grundlage der Freigabe ist `phase0_poc.py` in der Fassung von Branch
+`feat/phase-0-sandbox-poc`, ausgefuehrt auf `Test1.jpeg`. Referenzmaterial liegt
+unter `docs/phase0/` (siehe `docs/phase0/README.md`).
+
+Nachweis je Kriterium:
+
+| AC | Nachweis |
+|---|---|
+| AC-0.1 | Genau eine neue `.py`-Datei (`phase0_poc.py`); kein `src/`, keine JSON/YAML-Dateien. |
+| AC-0.2 | `Test1.jpeg`: `mouse` conf 0.744, `cell phone` conf 0.492; Device `mps`; `cuda` nur im Ablehnungspfad. |
+| AC-0.3 | Mittelpunkte (2254.27, 2914.61) und (987.17, 3027.89); Distanz Skript 1272.16 px vs. manuell 1272.1559 px → Delta 0.004 px. |
+| AC-0.4 | `Test1.jpeg --conf 0.10`: zwei `cell phone`-Detections; Gummiband zum naeheren (1272 px statt 2425 px), das fernere als "verworfen" markiert. |
+| AC-0.5 | `docs/phase0/Test1_phase0.png` zeigt Linie, beide Mittelpunkte und Distanzwert. |
+| AC-0.6 | `Test3.jpeg` (Maus als `sports ball` klassifiziert) und `Test4.jpeg` (keine Maus): Abbruch mit Meldung, Exit-Code 2, keine Ausgabedatei. |
+| AC-0.7 | Dieser Vermerk. |
+
+Damit ist das Gate aus REQ-0.9 passiert; die Arbeit an REQ-1 ff. ist ab hier zulaessig.
+
 ### Requirements (v0.1)
 
 **Annahmen (bei Widerspruch bitte korrigieren):**
