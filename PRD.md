@@ -45,7 +45,7 @@ Nachweis je Kriterium:
 | AC-0.2 | `Test1.jpeg`: `mouse` conf 0.744, `cell phone` conf 0.492; Device `mps`; `cuda` nur im Ablehnungspfad. |
 | AC-0.3 | Mittelpunkte (2254.27, 2914.61) und (987.17, 3027.89); Distanz Skript 1272.16 px vs. manuell 1272.1559 px → Delta 0.004 px. |
 | AC-0.4 | `Test1.jpeg --conf 0.10`: zwei `cell phone`-Detections; Gummiband zum naeheren (1272 px statt 2425 px), das fernere als "verworfen" markiert. |
-| AC-0.5 | `docs/phase0/Test1_phase0.png` zeigt Linie, beide Mittelpunkte und Distanzwert. |
+| AC-0.5 | `docs/phase0/Test1_phase0.jpg` zeigt Linie, beide Mittelpunkte und Distanzwert. |
 | AC-0.6 | `Test3.jpeg` (Maus als `sports ball` klassifiziert) und `Test4.jpeg` (keine Maus): Abbruch mit Meldung, Exit-Code 2, keine Ausgabedatei. |
 | AC-0.7 | Dieser Vermerk. |
 
