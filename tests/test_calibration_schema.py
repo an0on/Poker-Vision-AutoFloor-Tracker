@@ -475,6 +475,22 @@ def test_runtime_homography_small_scale_still_accepted():
     assert calibration.homography.forward[0][0] == 0.0001
 
 
+def test_runtime_homography_overflow_to_nan_rejected():
+    # Individually-finite entries (each passes Matrix3x3's own finite-value
+    # check) can still overflow when multiplied: forward[0][0]*inverse[0][0]
+    # and forward[0][1]*inverse[1][0] each overflow to +-inf, and their sum
+    # in the same dot product collapses to NaN. `abs(nan - expected) >
+    # epsilon` is always False, so this must be caught by an explicit
+    # finiteness check on the product, not the identity comparison alone.
+    payload = _payload(VALID_RUNTIME)
+    payload["homography"] = {
+        "forward": [[1e200, -1e200, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        "inverse": [[1e200, 0.0, 0.0], [1e200, 0.0, 0.0], [0.0, 0.0, 1.0]],
+    }
+    with pytest.raises(ValidationError, match="non-finite value"):
+        CalibrationRuntime.model_validate(payload)
+
+
 SELF_INTERSECTING_BOWTIE_POINTS = [
     {"x": 400, "y": 400},
     {"x": 404, "y": 404},

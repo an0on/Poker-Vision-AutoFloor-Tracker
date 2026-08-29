@@ -8,6 +8,8 @@ runtime code never re-solves a homography on load.
 
 from __future__ import annotations
 
+import math
+
 from pydantic import Field, model_validator
 
 from poker_vision.calibration.geometry import (
@@ -66,8 +68,19 @@ class HomographyMatrix(StrictModel):
         product = matrix3x3_multiply(self.forward, self.inverse)
         for row in range(3):
             for col in range(3):
+                entry = product[row][col]
+                # Individually-finite entries can still multiply/sum into an
+                # overflowed inf or (inf + -inf =) nan product; a bare
+                # `abs(nan - expected) > epsilon` is always False (NaN
+                # comparisons never succeed), which would silently let a
+                # garbage product through, so check finiteness explicitly.
+                if not math.isfinite(entry):
+                    raise ValueError(
+                        "homography is not invertible: forward @ inverse contains a "
+                        "non-finite value (overflow)"
+                    )
                 expected = 1.0 if row == col else 0.0
-                if abs(product[row][col] - expected) > _IDENTITY_EPSILON:
+                if abs(entry - expected) > _IDENTITY_EPSILON:
                     raise ValueError(
                         "homography is not invertible: forward @ inverse does not "
                         "equal the identity matrix"
