@@ -471,3 +471,46 @@ def test_runtime_self_intersecting_polygon_rejected():
     payload["zones"]["board_zone"]["points"] = SELF_INTERSECTING_BOWTIE_POINTS
     with pytest.raises(ValidationError, match="self-intersect"):
         CalibrationRuntime.model_validate(payload)
+
+
+# NaN/inf would otherwise silently defeat the checks above: e.g.
+# `abs(nan) < epsilon` and `abs(nan - expected) > epsilon` are both always
+# False in Python/IEEE 754, so a NaN coordinate or matrix entry would sail
+# through the degenerate-area and homography-invertibility checks. Rejected
+# at the type level instead (TablePoint/PixelPoint, Matrix3x3).
+
+
+def test_authoring_polygon_nan_coordinate_rejected():
+    payload = _payload(VALID_AUTHORING)
+    payload["zones"]["board_zone"]["points"][0]["x"] = float("nan")
+    with pytest.raises(ValidationError):
+        CalibrationAuthoring.model_validate(payload)
+
+
+def test_runtime_polygon_nan_coordinate_rejected():
+    payload = _payload(VALID_RUNTIME)
+    payload["zones"]["board_zone"]["points"][0]["x"] = float("nan")
+    with pytest.raises(ValidationError):
+        CalibrationRuntime.model_validate(payload)
+
+
+def test_runtime_homography_nan_entry_rejected():
+    payload = _payload(VALID_RUNTIME)
+    payload["homography"]["forward"][0][0] = float("nan")
+    with pytest.raises(ValidationError):
+        CalibrationRuntime.model_validate(payload)
+
+
+def test_load_calibration_runtime_with_nan_coordinate_from_json_file_rejected(tmp_path):
+    # End-to-end: json.loads accepts the non-standard (RFC 8259 forbids it)
+    # `NaN` literal by default, and json.dumps emits it for float("nan") the
+    # same way — so this exercises the exact loader path a hand-edited or
+    # buggy authoring file could hit, not just direct model construction.
+    payload = _payload(VALID_RUNTIME)
+    payload["zones"]["board_zone"]["points"][0]["x"] = float("nan")
+    raw = json.dumps(payload)
+    assert "NaN" in raw
+    path = tmp_path / "runtime.json"
+    path.write_text(raw)
+    with pytest.raises(ValueError, match="invalid calibration"):
+        load_calibration_runtime(path)

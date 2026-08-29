@@ -9,6 +9,7 @@ coordinates; that boundary is enforced by which type a field declares.
 
 from __future__ import annotations
 
+import math
 from enum import StrEnum
 from typing import Annotated
 
@@ -24,15 +25,15 @@ _AREA_EPSILON = 1e-9
 class PixelPoint(StrictModel):
     """A point in raw image pixel space (origin top-left, x right, y down)."""
 
-    x: float
-    y: float
+    x: float = Field(allow_inf_nan=False)
+    y: float = Field(allow_inf_nan=False)
 
 
 class TablePoint(StrictModel):
     """A point in table-plane coordinates, in the table's own unit (see `TableDimensions.unit`)."""
 
-    x: float
-    y: float
+    x: float = Field(allow_inf_nan=False)
+    y: float = Field(allow_inf_nan=False)
 
 
 def polygon_signed_area(points: list[TablePoint]) -> float:
@@ -147,6 +148,11 @@ class ImageDimensions(StrictModel):
 def _check_3x3(value: list[list[float]]) -> list[list[float]]:
     if len(value) != 3 or any(len(row) != 3 for row in value):
         raise ValueError("expected a 3x3 matrix (3 rows of 3 floats)")
+    # REQ-11: NaN/inf would silently defeat HomographyMatrix's invertibility
+    # check downstream (e.g. `abs(nan - expected) > epsilon` is always
+    # False), so reject them here at the type boundary instead.
+    if any(not math.isfinite(entry) for row in value for entry in row):
+        raise ValueError("matrix entries must be finite (no NaN/inf)")
     return value
 
 
