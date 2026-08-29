@@ -394,6 +394,30 @@ def test_runtime_chip_zone_overlap_between_seats_rejected():
         CalibrationRuntime.model_validate(payload)
 
 
+def test_runtime_identical_chip_zone_copy_pasted_between_seats_rejected():
+    # Realistic authoring mistake: seat_2's chip_zone block copy-pasted from
+    # seat_1 without updating the coordinates. Uses SEATS_WITH_OVERLAPPING_
+    # CHIP_ZONES' player_areas (which overlap in x:[50, 100]) so one
+    # rectangle can validly sit inside *both* player_areas in isolation.
+    # Every vertex/edge-midpoint of each chip_zone then lands exactly on the
+    # other's boundary rather than strictly inside it, and every edge pair
+    # is collinear rather than crossing — the most extreme case of overlap,
+    # but also the easiest for a naive vertex/crossing-only check to miss.
+    shared_chip_zone = {
+        "points": [
+            {"x": 60, "y": 10},
+            {"x": 90, "y": 10},
+            {"x": 90, "y": 50},
+            {"x": 60, "y": 50},
+        ]
+    }
+    payload = _payload(VALID_RUNTIME, seats=SEATS_WITH_OVERLAPPING_CHIP_ZONES)
+    payload["seats"][0]["zones"]["chip_zone"] = shared_chip_zone
+    payload["seats"][1]["zones"]["chip_zone"] = shared_chip_zone
+    with pytest.raises(ValidationError, match="chip_zone overlap between seats"):
+        CalibrationRuntime.model_validate(payload)
+
+
 def test_authoring_board_zone_overlaps_chip_zone_rejected():
     payload = _payload(VALID_AUTHORING)
     payload["zones"]["board_zone"] = BOARD_ZONE_OVERLAPPING_SEAT_1_CHIP_ZONE

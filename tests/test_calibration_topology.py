@@ -60,6 +60,17 @@ def test_overlap_partial_with_vertex_inside():
     assert polygons_overlap(a, b) is True
 
 
+def test_overlap_coincident_polygons():
+    # E.g. a chip_zone accidentally copy-pasted for two different seats:
+    # every vertex/edge-midpoint of each lands exactly on the other's
+    # boundary and every edge pair is collinear rather than crossing, so
+    # neither the vertex/midpoint-inside check nor the edge-crossing check
+    # alone would notice — this is exactly why `_centroid` is sampled too.
+    a = _polygon((10, 10), (50, 10), (50, 50), (10, 50))
+    b = _polygon((10, 10), (50, 10), (50, 50), (10, 50))
+    assert polygons_overlap(a, b) is True
+
+
 def test_overlap_one_fully_inside_other():
     inner = _polygon((10, 10), (50, 10), (50, 50), (10, 50))
     assert polygons_overlap(SQUARE_0_100, inner) is True

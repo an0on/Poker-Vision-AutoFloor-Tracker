@@ -111,6 +111,24 @@ def _edge_midpoints(points: list[TablePoint]) -> list[TablePoint]:
     return midpoints
 
 
+def _centroid(points: list[TablePoint]) -> TablePoint:
+    """Plain average of the vertices (not the area-weighted centroid).
+
+    For a convex polygon this is guaranteed to land strictly inside it (a
+    convex combination of a convex set's own points stays in that set) —
+    used as one more overlap-detection sample so two coincident or
+    near-coincident polygons (e.g. a chip_zone copy-pasted for two seats)
+    are still caught even though every vertex/edge-midpoint sample then
+    lands exactly on the other polygon's boundary and no edge properly
+    crosses (they're collinear, not transversal). Doesn't help for a
+    pathologically concave polygon whose own vertex-average happens to fall
+    outside it, but that's a much rarer shape for a hand-authored zone than
+    an accidental exact duplicate.
+    """
+    n = len(points)
+    return TablePoint(x=sum(p.x for p in points) / n, y=sum(p.y for p in points) / n)
+
+
 def polygon_contains(outer: TablePolygon, inner: TablePolygon) -> bool:
     """True if `inner` lies entirely within `outer` (touching `outer`'s boundary is fine)."""
     outer_points, inner_points = outer.points, inner.points
@@ -137,8 +155,8 @@ def polygons_overlap(a: TablePolygon, b: TablePolygon) -> bool:
     considered an overlap.
     """
     a_points, b_points = a.points, b.points
-    a_samples = a_points + _edge_midpoints(a_points)
-    b_samples = b_points + _edge_midpoints(b_points)
+    a_samples = a_points + _edge_midpoints(a_points) + [_centroid(a_points)]
+    b_samples = b_points + _edge_midpoints(b_points) + [_centroid(b_points)]
     if any(_point_strictly_inside(p, b_points) for p in a_samples):
         return True
     if any(_point_strictly_inside(p, a_points) for p in b_samples):
