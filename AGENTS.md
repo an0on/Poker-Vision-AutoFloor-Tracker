@@ -1,85 +1,82 @@
 # AGENTS.md — Abschlussprojekt Poker Vision
 
-## Ziel
-Baue eine lokale Computer-Vision-Pipeline für Poker-Tischanalyse mit Fokus auf:
-- Seat Occupancy
-- Dealer Button Position
-- Board State: Flop / Turn / River
-- Handablauf über State Machine
+## Source of truth
+Maßgeblich ist `/PRD.md`, ergänzt durch den Workflow in `/CLAUDE.md`. Bei
+Widerspruch zwischen diesem Dokument und `PRD.md` gilt `PRD.md`. Geplante,
+aber noch nicht implementierte Erweiterungen stehen in
+`docs/future-features.md`, nicht hier.
+
+## Ziel (v0.1 MVP)
+Lokales CV-System (Top-Down-Kamera, 1 Tisch) mit Platzhalter-Detections
+(Mock-Erkennung statt eigenem Modell), das end-to-end validiert:
+- Seat Occupancy (Chip-Präsenz in `chip_zone`)
+- Dealer-Button-Position → Seat
+- Board State: Flop / Turn / River (Kartenanzahl in `board_zone`)
+- Hand-Start/-Ende über Board leer ↔ nicht-leer
 
 ## Harte Annahmen
-- Zielplattform zuerst: **MacBook Pro M4 Max, 36 GB RAM**
+- Zielplattform zuerst: **MacBook Pro M4 Max, 36 GB RAM**; Inferenz auf
+  `cpu`/`mps`, `cuda` in v0.1 ein reservierter, abgelehnter Wert (REQ-3)
 - Primärformat: **Querformat**
-- Tisch in kanonischer Querformat-Orientierung verarbeiten
-- Falls Tisch auf dem Kopf steht: bevorzugt **180° drehen**
-- Kein End-to-End-Monolith; **modulare Pipeline**
+- Kein End-to-End-Monolith; **modulare Pipeline** unter `src/poker_vision/`
+  (REQ-1)
 
-## Geometrie / Kalibrierung
-Nutze diese Hauptdateien zuerst:
-1. `calibration/runtime/poker_table_runtime_v1.json`
-2. `docs/poker_table_runtime_v1.md`
-3. `calibration/poker_table_calibration_instance_current_table_v3_landscape.json`
-4. `docs/abschlussprojekt_poker_vision_handover.md`
+## Kalibrierung
+Ein einziges Kalibrierungsschema (Pydantic v2, REQ-4/REQ-6/REQ-7):
+`CalibrationAuthoring`/`CalibrationRuntime` in
+`src/poker_vision/calibration/`. Enthält Kameraintrinsics + Distortion,
+Homographie Pixel→Tischebene, Tischmaße/-einheit sowie Zonen
+(`player_area`, `chip_zone` je Seat, global `board_zone` und
+`dealer_area`) als Polygone in Tischkoordinaten.
 
-Kalibrierlogik:
-- `outer_rail`: 4 Punkte
-- `inner_rail`: 4 Punkte
-- `action_area`: 4 Punkte
-- `board_zone`: 4 Punkte
-- 10 Seat-Divider mit je 2 Punkten
-- `seat_1` explizit definierbar, danach clockwise
+Die älteren Kalibrierungs-JSONs (`calibration/*_v1_*.json`, `*_v2_*.json`,
+`*_v3_*.json`, `calibration/runtime/poker_table_runtime_v1.json`) sind
+Referenzgeometrie für die v3-landscape-Migration in ein neues Schema
+(REQ-6, REQ-9) — sie sind kein Format, das die neuen
+`CalibrationAuthoring`/`CalibrationRuntime`-Schemas direkt einlesen. Die
+Migration selbst ist offene Arbeit (REQ-6/REQ-9/REQ-10), nicht Teil von
+REQ-4.
 
-## Erkennungslogik
-### Seat Occupancy Priorität
-1. `chips`
-2. `all_in_button`
-3. `face_down_cards_secondary`
+## Erkennungslogik (v0.1)
+### Seat Occupancy
+`occupied`, wenn ≥ 1 stabiler `chip`-Track in der `chip_zone` liegt
+(REQ-29). Kein zusätzliches Signal in v0.1 — siehe
+`docs/future-features.md`.
 
 ### Dealer Button
-- direkt visuell erkennen
-- dann `nearest_player_area_or_nearest_seat_anchor`
-- kein separates Boundary-Band nötig
+- Detection-Klasse `dealer_button`, direkt erkannt
+- Zuordnung per Point-in-Polygon (`dealer_area`) bzw. Nearest-Seat-Fallback
+  unter Schwellwert (REQ-26, REQ-27)
 
 ### Board
 - eine einzige `board_zone`
-- 3 Karten => Flop
-- 4 Karten => Turn
-- 5 Karten => River
+- 3 Karten => Flop, 4 Karten => Turn, 5 Karten => River (REQ-31)
+- nur monoton steigende Übergänge innerhalb einer Hand
 
-## Erwartete nächste Implementierungsschritte
-1. Loader/Parser für `poker_table_runtime_v1.json`
-2. Geometrie-Helfer:
-   - point-in-polygon
-   - nearest-seat-anchor
-   - nearest-seat-wedge
-3. Objekt-Erkennung für:
-   - Dealer Button
-   - Chips
-   - Cards
-   - All-in Button
-4. State Machine:
-   - waiting_for_new_hand
-   - preflop
-   - flop
-   - turn
-   - river
-   - showdown
-   - hand_closed
+### Hand-Verlauf
+`hand_started`/`hand_ended` ausschließlich über Board leer ↔ nicht-leer
+(REQ-32, PRD.md Annahme A2). Keine granularere State Machine (kein
+preflop/showdown/waiting/closed) in v0.1 — siehe
+`docs/future-features.md`.
 
-## Modellrichtung
-Empfohlen:
-- YOLO-basiertes Custom Detection Modell
-- regelbasierte Geometrie- und Zustandslogik darüber
-- optional später Tracking
+## Modellrichtung (v0.1)
+Platzhalter-Erkennung ohne Training: `mock`-Detector aus Skriptdatei,
+ArUco-Markern, oder einem vortrainierten COCO-Standardmodell mit
+Klassen-Mapping (REQ-18–REQ-20). Ein eigenes YOLO-Modell (`yolo`-Detector,
+CoreML-Export, MPS-Inferenz) existiert nur als Interface-Stub und ist
+explizit out of scope für v0.1 (PRD.md).
 
 ## Wichtige Hinweise
-- `chip_zone` und `card_presence_zone` sind aktuell noch abgeleitet, nicht final manuell kalibriert
-- ursprüngliche Telegram-Cache-Bilder sind lokal nicht mehr vorhanden
-- vorhandene Overlays/JSONs sind die maßgebliche Arbeitsgrundlage
+- `chip_zone`/`player_area` in den alten Kalibrierungs-JSONs sind noch
+  abgeleitet, nicht final manuell kalibriert; bei der Migration (REQ-6,
+  REQ-9) gegen REQ-11 neu zu validieren.
+- Geplante, aber noch nicht implementierte Funktionen stehen in
+  `docs/future-features.md`, nicht in diesem Dokument.
 
 ## Wichtigste Dateien
-- `calibration/runtime/poker_table_runtime_v1.json`
-- `docs/poker_table_runtime_v1.md`
-- `docs/abschlussprojekt_poker_vision_handover.md`
+- `/PRD.md` — Requirements und Acceptance Criteria (Source of truth)
+- `/CLAUDE.md` — Workflow
+- `docs/future-features.md` — Post-v0.1-Erweiterungen
+- `src/poker_vision/calibration/` — Authoring-/Runtime-Schema (REQ-4)
 - `calibration/poker_table_calibration_instance_current_table_v3_landscape.json`
-- `overlays/calibration_instances/poker_table_calibration_instance_current_table_v3_landscape.png`
+  — Referenzgeometrie für die REQ-6-Migration
