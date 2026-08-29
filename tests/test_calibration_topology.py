@@ -45,6 +45,39 @@ def test_contains_polygon_pokes_out_through_concave_outer_rejected():
     assert polygon_contains(outer, inner) is False
 
 
+# Outer with a rectangular notch cut from the top, mouth exactly at y=15;
+# a sampling-based check missed cases where an inner edge enters and exits
+# through the notch's reflex corner *vertices* rather than a mid-edge point
+# (a stale `_segments_properly_intersect`-based check treats a vertex-exact
+# touch as "adjacent", not "crossing"). polygon_contains is now exact
+# (triangulate + Sutherland-Hodgman clip + area comparison), so it doesn't
+# depend on where along an edge the notch happens to be entered.
+NOTCH_OUTER = _polygon((0, 0), (20, 0), (20, 20), (12, 20), (12, 15), (8, 15), (8, 20), (0, 20))
+
+
+def test_contains_inner_vertex_at_both_reflex_corners_is_valid():
+    # Inner stays entirely below the notch (y <= 15); touching both reflex
+    # corners exactly is a legitimate flush layout, not a violation.
+    inner = _polygon((2, 10), (18, 10), (12, 15), (8, 15))
+    assert polygon_contains(NOTCH_OUTER, inner) is True
+
+
+def test_contains_inner_pokes_through_notch_via_reflex_vertex_rejected():
+    # One inner vertex sits exactly on the notch's left reflex corner
+    # (8, 15); from there the inner boundary pokes up into the excluded
+    # notch area before coming back down.
+    inner = _polygon((2, 10), (18, 10), (18, 17), (8, 15), (2, 17))
+    assert polygon_contains(NOTCH_OUTER, inner) is False
+
+
+def test_contains_edge_dips_into_off_center_notch_rejected():
+    # This edge's own midpoint (7, 17) sits outside the notch's x-range
+    # ([8, 12]), so a midpoint-only sample would miss the violation — the
+    # edge still dips into the excluded notch area near its other end.
+    inner = _polygon((1, 17), (13, 17), (13, 10), (1, 10))
+    assert polygon_contains(NOTCH_OUTER, inner) is False
+
+
 # --- polygons_overlap ---------------------------------------------------------
 
 

@@ -1,24 +1,25 @@
 """Polygon containment and overlap for table-plane zones (REQ-11).
 
-Pure-Python 2D polygon geometry (no numpy/shapely dependency): point-in-
-polygon via ray casting, segment intersection, and the two predicates
-`polygon_contains`/`polygons_overlap` that `zones.py` uses to enforce zone
-topology. Zones are hand-authored (REQ-10), typically small quadrilaterals,
-possibly concave seat wedges around a round table — these functions make no
-convexity assumption, but do rely on polygons being simple
-(non-self-intersecting), which `TablePolygon`'s own validator enforces
-(REQ-11, see `geometry.py`).
+Pure-Python 2D polygon geometry (no numpy/shapely dependency): the two
+predicates `polygon_contains`/`polygons_overlap` that `zones.py` uses to
+enforce zone topology. Zones are hand-authored (REQ-10), typically small
+quadrilaterals, possibly concave seat wedges around a round table — these
+functions make no convexity assumption, but do rely on polygons being
+simple (non-self-intersecting), which `TablePolygon`'s own validator
+enforces (REQ-11, see `geometry.py`).
 
-`polygons_overlap` decomposes both polygons into triangles (ear clipping,
-which always succeeds for a simple polygon) and tests every triangle pair
-for positive-area overlap via the separating-axis theorem. This isn't the
-simplest possible approach, but a sampling heuristic (test vertices/edge-
-midpoints for strict containment, plus edge-crossing) provably cannot work
-in general: for two coincident (or merely similar) *concave* polygons,
-every sampled point can land exactly on the other polygon's boundary and
-every edge pair can be collinear rather than crossing, even though the
-polygons fully overlap. Triangulation sidesteps this because triangles are
-always convex, and SAT is exact (not sample-based) for convex shapes.
+Both predicates decompose their polygons into triangles (ear clipping,
+which always succeeds for a simple polygon) rather than testing sampled
+points (vertices, edge midpoints, ...): for a concave polygon there is no
+finite set of "representative" sample points that's guaranteed to catch
+every violation — see this module's git history for two sampling
+heuristics that each looked reasonable and each had a concrete
+counterexample. Triangles are always convex, which makes both operations
+exact instead: `polygons_overlap` tests every triangle pair for
+positive-area overlap via the separating-axis theorem, and
+`polygon_contains` clips every inner triangle against every outer triangle
+(Sutherland-Hodgman, exact for convex-convex) and checks the clipped area
+sums back up to the inner triangle's own area.
 """
 
 from __future__ import annotations
@@ -27,10 +28,12 @@ import math
 
 from poker_vision.calibration.geometry import TablePoint, TablePolygon, polygon_signed_area
 
-# Absolute tolerance for "is this value zero" in cross-product/orientation
-# tests below. Table coordinates are authored, not measured, so points
-# meant to be collinear/coincident land there exactly or with float noise
-# many orders of magnitude smaller than any real zone dimension.
+# Absolute tolerance for "is this value zero" — both in cross-product/
+# orientation tests, and as an area (in `polygon_contains`) or projected-
+# length (in `polygons_overlap`'s SAT) difference. Table coordinates are
+# authored, not measured, so points meant to be collinear/coincident land
+# there exactly or with float noise many orders of magnitude smaller than
+# any real zone dimension (and hence its area).
 _EPSILON = 1e-9
 
 
@@ -55,67 +58,6 @@ def _on_segment(p: TablePoint, a: TablePoint, b: TablePoint) -> bool:
         min(a.x, b.x) - _EPSILON <= p.x <= max(a.x, b.x) + _EPSILON
         and min(a.y, b.y) - _EPSILON <= p.y <= max(a.y, b.y) + _EPSILON
     )
-
-
-def _segments_properly_intersect(
-    p1: TablePoint, p2: TablePoint, p3: TablePoint, p4: TablePoint
-) -> bool:
-    """True if segment p1-p2 crosses segment p3-p4 at an interior point of both.
-
-    Shared endpoints or collinear touching are deliberately excluded (that's
-    "adjacent", not "crossing") — those are handled by the caller as
-    boundary contact, not as an overlap-causing intersection.
-    """
-    d1 = _sign(_cross(p3, p4, p1))
-    d2 = _sign(_cross(p3, p4, p2))
-    d3 = _sign(_cross(p1, p2, p3))
-    d4 = _sign(_cross(p1, p2, p4))
-    if d1 == 0 or d2 == 0 or d3 == 0 or d4 == 0:
-        return False
-    return d1 != d2 and d3 != d4
-
-
-def _point_on_boundary(point: TablePoint, polygon_points: list[TablePoint]) -> bool:
-    n = len(polygon_points)
-    return any(
-        _on_segment(point, polygon_points[i], polygon_points[(i + 1) % n]) for i in range(n)
-    )
-
-
-def _ray_cast_inside(point: TablePoint, polygon_points: list[TablePoint]) -> bool:
-    """Even-odd ray-casting test. Unreliable exactly on an edge by design —
-    callers must check `_point_on_boundary` separately when that matters."""
-    n = len(polygon_points)
-    inside = False
-    for i in range(n):
-        a, b = polygon_points[i], polygon_points[(i + 1) % n]
-        if (a.y > point.y) != (b.y > point.y):
-            x_at_y = a.x + (point.y - a.y) * (b.x - a.x) / (b.y - a.y)
-            if point.x < x_at_y:
-                inside = not inside
-    return inside
-
-
-def _point_inside_or_on(point: TablePoint, polygon_points: list[TablePoint]) -> bool:
-    return _point_on_boundary(point, polygon_points) or _ray_cast_inside(point, polygon_points)
-
-
-def _edge_midpoints(points: list[TablePoint]) -> list[TablePoint]:
-    """Midpoint of every edge, in addition to the vertices themselves.
-
-    Two convex quads that share a flush edge (e.g. same y-range, overlapping
-    x-range) can overlap with positive area while every *vertex* of each
-    lands exactly on the other's boundary (a T-junction, not a crossing) —
-    vertices alone would then miss the overlap entirely. An edge's midpoint
-    can't coincide with the other polygon's boundary in that same way, so
-    sampling it too closes the gap without needing full polygon clipping.
-    """
-    n = len(points)
-    midpoints = []
-    for i in range(n):
-        a, b = points[i], points[(i + 1) % n]
-        midpoints.append(TablePoint(x=(a.x + b.x) / 2, y=(a.y + b.y) / 2))
-    return midpoints
 
 
 def _triangle_strictly_contains(
@@ -231,22 +173,70 @@ def _triangles_share_positive_area(
     return True
 
 
+def _line_intersection(
+    p1: TablePoint, p2: TablePoint, p3: TablePoint, p4: TablePoint
+) -> TablePoint:
+    """Intersection of infinite line p1-p2 with infinite line p3-p4.
+
+    Only ever called from `_clip_convex_by_convex` on a pair known to cross
+    (one endpoint of p1-p2 is on each side of p3-p4), so the lines are
+    never parallel here and the division is safe.
+    """
+    x1, y1, x2, y2 = p1.x, p1.y, p2.x, p2.y
+    x3, y3, x4, y4 = p3.x, p3.y, p4.x, p4.y
+    denominator = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+    t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denominator
+    return TablePoint(x=x1 + t * (x2 - x1), y=y1 + t * (y2 - y1))
+
+
+def _clip_convex_by_convex(
+    subject: list[TablePoint], clip: list[TablePoint]
+) -> list[TablePoint]:
+    """Sutherland-Hodgman: the exact intersection of `subject` with convex `clip`.
+
+    Correct regardless of `subject`'s own winding or convexity (each of
+    `clip`'s edges cuts `subject` down to its half-plane in turn); here
+    both arguments happen to be triangles, so `subject` is convex too.
+    """
+    orientation = _sign(polygon_signed_area(clip))
+    output = list(subject)
+    n = len(clip)
+    for i in range(n):
+        if not output:
+            break
+        edge_a, edge_b = clip[i], clip[(i + 1) % n]
+        input_points = output
+        output = []
+        m = len(input_points)
+        for j in range(m):
+            curr = input_points[j]
+            prev = input_points[j - 1]
+            curr_inside = _sign(_cross(edge_a, edge_b, curr)) in (0, orientation)
+            prev_inside = _sign(_cross(edge_a, edge_b, prev)) in (0, orientation)
+            if curr_inside:
+                if not prev_inside:
+                    output.append(_line_intersection(prev, curr, edge_a, edge_b))
+                output.append(curr)
+            elif prev_inside:
+                output.append(_line_intersection(prev, curr, edge_a, edge_b))
+    return output
+
+
 def polygon_contains(outer: TablePolygon, inner: TablePolygon) -> bool:
     """True if `inner` lies entirely within `outer` (touching `outer`'s boundary is fine)."""
-    outer_points, inner_points = outer.points, inner.points
-    inner_samples = inner_points + _edge_midpoints(inner_points)
-    if not all(_point_inside_or_on(p, outer_points) for p in inner_samples):
-        return False
-    n_outer, n_inner = len(outer_points), len(inner_points)
-    for i in range(n_inner):
-        a, b = inner_points[i], inner_points[(i + 1) % n_inner]
-        for j in range(n_outer):
-            c, d = outer_points[j], outer_points[(j + 1) % n_outer]
-            if _segments_properly_intersect(a, b, c, d):
-                # All sampled inner points are inside/on outer, yet an inner
-                # edge crosses an outer edge: inner pokes out through a
-                # concave part of outer, so it isn't fully contained after all.
-                return False
+    outer_triangles = _triangulate(outer.points)
+    inner_triangles = _triangulate(inner.points)
+    for inner_triangle in inner_triangles:
+        inner_area = abs(polygon_signed_area(list(inner_triangle)))
+        covered_area = 0.0
+        for outer_triangle in outer_triangles:
+            clipped = _clip_convex_by_convex(list(inner_triangle), list(outer_triangle))
+            covered_area += abs(polygon_signed_area(clipped))
+        # outer's own triangles never overlap each other (a valid
+        # triangulation tiles outer exactly), so summing the clipped area
+        # against each of them can't double-count part of inner_triangle.
+        if inner_area - covered_area > _EPSILON:
+            return False
     return True
 
 
