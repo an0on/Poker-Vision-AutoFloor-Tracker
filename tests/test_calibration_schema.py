@@ -368,6 +368,42 @@ def test_runtime_degenerate_polygon_rejected():
         CalibrationRuntime.model_validate(payload)
 
 
+# A duplicate consecutive vertex or a backtracking edge pair is already
+# rejected indirectly by `_is_simple_polygon` (it forces some other,
+# non-adjacent edge pair to share an exact point) — these two checks lock in
+# the more direct, specifically-worded rejection path instead.
+DUPLICATE_CONSECUTIVE_VERTEX_POINTS = [
+    {"x": 400, "y": 400},
+    {"x": 500, "y": 400},
+    {"x": 500, "y": 400},
+    {"x": 500, "y": 500},
+    {"x": 400, "y": 500},
+]
+BACKTRACKING_EDGE_POINTS = [
+    {"x": 400, "y": 400},
+    {"x": 550, "y": 400},
+    {"x": 480, "y": 400},
+    {"x": 480, "y": 500},
+]
+
+
+@pytest.mark.parametrize(
+    "invalid_points", [DUPLICATE_CONSECUTIVE_VERTEX_POINTS, BACKTRACKING_EDGE_POINTS]
+)
+def test_authoring_adjacent_edges_overlap_rejected(invalid_points):
+    payload = _payload(VALID_AUTHORING)
+    payload["zones"]["board_zone"]["points"] = invalid_points
+    with pytest.raises(ValidationError, match="adjacent edges overlap"):
+        CalibrationAuthoring.model_validate(payload)
+
+
+def test_runtime_adjacent_edges_overlap_rejected():
+    payload = _payload(VALID_RUNTIME)
+    payload["zones"]["board_zone"]["points"] = DUPLICATE_CONSECUTIVE_VERTEX_POINTS
+    with pytest.raises(ValidationError, match="adjacent edges overlap"):
+        CalibrationRuntime.model_validate(payload)
+
+
 def test_authoring_chip_zone_outside_player_area_rejected():
     payload = _payload(VALID_AUTHORING)
     payload["seats"][0]["zones"]["chip_zone"] = CHIP_ZONE_OUTSIDE_SEAT_1_PLAYER_AREA

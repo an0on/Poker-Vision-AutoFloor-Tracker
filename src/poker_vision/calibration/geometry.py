@@ -103,6 +103,31 @@ def _is_simple_polygon(points: list[TablePoint]) -> bool:
     return True
 
 
+def _adjacent_edges_are_valid(prev: TablePoint, curr: TablePoint, next_: TablePoint) -> bool:
+    """False if edge prev->curr and edge curr->next overlap along more than their shared point.
+
+    `_is_simple_polygon` deliberately skips adjacent edge pairs (sharing one
+    endpoint is normal), so a duplicate vertex (curr == prev or curr ==
+    next_, a zero-length edge) or a backtrack (prev, curr, next_ collinear
+    with next_ heading back towards prev) needs its own direct check.
+    """
+    if (prev.x == curr.x and prev.y == curr.y) or (curr.x == next_.x and curr.y == next_.y):
+        return False
+    if _sign(_cross(prev, curr, next_)) != 0:
+        return True  # not collinear, so can't overlap beyond the shared point
+    incoming = (curr.x - prev.x, curr.y - prev.y)
+    outgoing = (next_.x - curr.x, next_.y - curr.y)
+    return incoming[0] * outgoing[0] + incoming[1] * outgoing[1] > 0
+
+
+def _has_valid_adjacent_edges(points: list[TablePoint]) -> bool:
+    n = len(points)
+    return all(
+        _adjacent_edges_are_valid(points[(i - 1) % n], points[i], points[(i + 1) % n])
+        for i in range(n)
+    )
+
+
 class TablePolygon(StrictModel):
     """A closed polygon in table coordinates.
 
@@ -118,6 +143,18 @@ class TablePolygon(StrictModel):
         # duplicated, i.e. the polygon doesn't enclose any actual area.
         if abs(polygon_signed_area(self.points)) < _AREA_EPSILON:
             raise ValueError("polygon is degenerate: zero area (collinear or duplicate points)")
+        # REQ-11: a duplicate consecutive vertex or a backtracking edge pair
+        # (three consecutive collinear points doubling back on themselves)
+        # is already rejected indirectly by the checks below — it forces
+        # some other, non-adjacent edge pair to share an exact point, which
+        # `_is_simple_polygon` catches — but checking it directly here is a
+        # much clearer, more specific error for what's a common authoring
+        # typo, rather than relying on that indirect interaction.
+        if not _has_valid_adjacent_edges(self.points):
+            raise ValueError(
+                "polygon is invalid: adjacent edges overlap (duplicate vertex or "
+                "backtracking edge)"
+            )
         # REQ-11: a self-intersecting polygon isn't "closed" in any usable
         # sense — topology.py's containment/overlap checks assume simple
         # polygons, and ray casting has no well-defined answer otherwise.
