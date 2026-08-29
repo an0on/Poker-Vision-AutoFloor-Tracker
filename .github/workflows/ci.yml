@@ -1,8 +1,5 @@
 name: CI
 
-# Tests and build only. Codex review happens locally and manually before
-# opening a PR — see CLAUDE.md "Review before merge".
-
 on:
   pull_request:
     branches: [main]
@@ -15,9 +12,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up Python
+        if: hashFiles('pyproject.toml') != ''
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        if: hashFiles('pyproject.toml') != ''
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
       - name: Install dependencies
-        run: npm ci
-      - name: Run tests
-        run: npm test
-      - name: Build
-        run: npm run build
+        if: hashFiles('pyproject.toml') != ''
+        run: uv sync --all-extras --dev
+
+      - name: Lint
+        if: hashFiles('pyproject.toml') != ''
+        run: uv run ruff check .
+
+      - name: Test
+        if: hashFiles('pyproject.toml') != ''
+        run: uv run pytest
+
+      - name: No Python project yet
+        if: hashFiles('pyproject.toml') == ''
+        run: echo "No pyproject.toml yet — nothing to lint or test."
