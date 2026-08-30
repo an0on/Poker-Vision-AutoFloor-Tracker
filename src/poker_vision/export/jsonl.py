@@ -54,12 +54,13 @@ class JsonlEventExporter:
         self._file = self.path.open("a", encoding="utf-8")
 
     def export(self, events: Iterable[Event]) -> None:
-        wrote = False
         for event in events:
-            self._file.write(event.model_dump_json())
-            self._file.write("\n")
-            wrote = True
-        if wrote:
+            # One write() call per line: a crash between writing the JSON
+            # payload and its trailing newline would otherwise leave a
+            # malformed trailing line that fails schema validation on
+            # re-read. Flushing per event bounds any crash to at most the
+            # one event in flight, matching this module's docstring.
+            self._file.write(event.model_dump_json() + "\n")
             self._file.flush()
 
     def close(self) -> None:
