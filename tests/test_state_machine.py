@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from poker_vision.assignment.models import FrameAssignments, ZoneAssignment, ZoneKind
@@ -253,3 +255,49 @@ def test_snapshot_after_hand_ends_keeps_last_hand_id_but_marks_inactive():
     assert snapshot.hand_id == 1
     assert snapshot.hand_active is False
     assert snapshot.street is None
+
+
+# --- concurrent access (REQ-35): update() and snapshot() are mutually exclusive
+
+
+def test_snapshot_blocks_until_a_concurrent_update_finishes():
+    # The websocket export adapter (REQ-35) calls snapshot() from an ASGI
+    # server thread while the pipeline's own thread may be mid-update() --
+    # without the lock, snapshot() could observe some trackers already
+    # mutated for the new frame and others still on the old one.
+    machine = PipelineStateMachine(["seat_1"])
+    entered_update = threading.Event()
+    release_update = threading.Event()
+
+    original_dealer_update = machine._dealer.update
+
+    def blocking_dealer_update(frame_assignments):
+        entered_update.set()
+        assert release_update.wait(timeout=5), "test setup: release was never signaled"
+        return original_dealer_update(frame_assignments)
+
+    machine._dealer.update = blocking_dealer_update
+
+    update_thread = threading.Thread(
+        target=machine.update, args=(_frame(_chip(1, "seat_1"), frame_index=0),)
+    )
+    update_thread.start()
+    assert entered_update.wait(timeout=5), "update() never reached the dealer tracker"
+
+    snapshots: list = []
+    snapshot_thread = threading.Thread(target=lambda: snapshots.append(machine.snapshot()))
+    snapshot_thread.start()
+
+    # update() is still holding the lock inside the blocked dealer tracker --
+    # snapshot() must not have returned yet.
+    snapshot_thread.join(timeout=0.2)
+    assert snapshot_thread.is_alive()
+    assert snapshots == []
+
+    release_update.set()
+    update_thread.join(timeout=5)
+    snapshot_thread.join(timeout=5)
+
+    assert len(snapshots) == 1
+    assert snapshots[0].sequence == 1
+    assert snapshots[0].seats[0].occupied is True
