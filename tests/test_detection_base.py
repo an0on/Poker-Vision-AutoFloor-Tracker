@@ -225,12 +225,10 @@ def test_apply_homography_to_point_rejects_horizon_point():
 def test_apply_homography_to_point_accepts_tiny_but_valid_scale():
     # HomographyMatrix only requires forward @ inverse == identity, which a
     # uniformly-rescaled matrix pair still satisfies -- scaling forward by s
-    # and inverse by 1/s leaves their product unchanged. A pre-fix absolute
-    # threshold on the raw (unnormalised) w would reject this valid matrix
-    # for every ordinary point, since w is tiny for all of them here.
-    # Small enough that the pre-fix absolute threshold (1e-9 on the raw,
-    # unnormalised w) would have rejected this point (raw w = 1e-10 here);
-    # the fix's Frobenius-normalised w is ~0.044, comfortably above it.
+    # and inverse by 1/s leaves their product unchanged. Small enough that
+    # a pre-fix absolute threshold (1e-9 on the raw, unnormalised w) would
+    # have rejected this point (raw w = 1e-10 here); the fix's normalised w
+    # is ~0.044, comfortably above it.
     scale = 1e-10
     forward = [
         [2.0 * scale, 0.0, 10.0 * scale],
@@ -250,6 +248,26 @@ def test_apply_homography_to_point_accepts_tiny_but_valid_scale():
 
     assert result.x == pytest.approx(30.0)
     assert result.y == pytest.approx(50.0)
+
+
+@pytest.mark.parametrize("scale", [1e200, 1e-200])
+def test_apply_homography_to_point_handles_extreme_scale(scale):
+    # Codex finding: squaring entries before normalising overflows entry*entry
+    # to inf for a huge scale (e.g. 1e200) or underflows it to exactly 0.0
+    # for a tiny one (1e-200), even though HomographyMatrix accepts the
+    # reciprocally-scaled inverse and the mapping is equivalent to the
+    # identity. That corrupted norm previously produced a false horizon
+    # error (inf case) or a ZeroDivisionError (0.0 case).
+    forward = [[scale, 0.0, 0.0], [0.0, scale, 0.0], [0.0, 0.0, scale]]
+    inverse = [[1 / scale, 0.0, 0.0], [0.0, 1 / scale, 0.0], [0.0, 0.0, 1 / scale]]
+    homography = HomographyMatrix(forward=forward, inverse=inverse)
+
+    result = apply_homography_to_point(
+        PixelPoint(x=7.0, y=13.0), homography, NEUTRAL_CAMERA, ZERO_DISTORTION
+    )
+
+    assert result.x == pytest.approx(7.0)
+    assert result.y == pytest.approx(13.0)
 
 
 def test_apply_homography_to_point_undistorts_before_transform():

@@ -145,8 +145,15 @@ def _apply_matrix(matrix: Matrix3x3, x: float, y: float) -> tuple[float, float]:
     # pair), so normalising by the Frobenius norm first makes the horizon
     # threshold below independent of that arbitrary scale; tx/tw and ty/tw
     # are unaffected since numerator and denominator scale together.
-    norm = math.sqrt(sum(entry * entry for row in matrix for entry in row))
-    m = [[entry / norm for entry in row] for row in matrix]
+    #
+    # Scaling by the largest absolute entry before squaring keeps every
+    # squared term in [0, 1]: an extreme (but validly-scaled, e.g. 1e200 *
+    # identity) matrix would otherwise overflow entry*entry to inf (or
+    # underflow it to exactly 0.0), corrupting the norm.
+    max_abs = max(abs(entry) for row in matrix for entry in row)
+    scaled = [[entry / max_abs for entry in row] for row in matrix]
+    norm = math.sqrt(sum(entry * entry for row in scaled for entry in row))
+    m = [[entry / norm for entry in row] for row in scaled]
     tx = m[0][0] * x + m[0][1] * y + m[0][2]
     ty = m[1][0] * x + m[1][1] * y + m[1][2]
     tw = m[2][0] * x + m[2][1] * y + m[2][2]
