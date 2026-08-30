@@ -14,12 +14,22 @@ one-shot construction decision, while fanning events out to whatever list
 resulted is `ExportManager`'s only job -- the same split `load_config()`
 (construction) and `Config` (validation) already use elsewhere in this
 project.
+
+`build_exporters()` is also what opens `JsonlEventExporter`'s file handle,
+so `ExportManager` -- the only thing holding a reference to that adapter
+afterwards -- is the one place left that can release it. `close()` closes
+whichever constructed adapters expose a `close()` of their own (currently
+just `JsonlEventExporter`; `WebSocketEventExporter` and
+`TournamentDirectorExporter` own no such resource and are skipped) via
+`getattr` rather than an `EventExporter.close()` method, since `close()`
+isn't part of every adapter's contract -- only of the ones that need it.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
+from types import TracebackType
 
 from poker_vision.config import Config
 from poker_vision.export.base import EventExporter
@@ -64,3 +74,31 @@ class ExportManager:
                     "export adapter %s failed; remaining adapters still ran",
                     type(exporter).__name__,
                 )
+
+    def close(self) -> None:
+        """Close every constructed adapter that owns a closeable resource.
+
+        One adapter's `close()` raising must not skip the rest, for the same
+        reason one adapter's `export()` raising must not skip the rest.
+        """
+        for exporter in self._exporters:
+            close = getattr(exporter, "close", None)
+            if close is None:
+                continue
+            try:
+                close()
+            except Exception:
+                logger.exception(
+                    "closing export adapter %s failed", type(exporter).__name__
+                )
+
+    def __enter__(self) -> ExportManager:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.close()

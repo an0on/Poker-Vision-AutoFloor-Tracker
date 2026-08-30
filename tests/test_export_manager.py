@@ -170,6 +170,61 @@ def test_a_failing_adapter_does_not_stop_the_others(failing_position):
         assert recorder.received == [events]
 
 
+# --- ExportManager: closes adapters that own a resource --------------------
+
+
+def test_close_closes_jsonl_and_ignores_adapters_without_close(tmp_path):
+    machine = PipelineStateMachine(["seat_1"])
+    config = _config(
+        export_overrides={"jsonl": True, "websocket": True, "tournament_director": True},
+        jsonl_export_dir=tmp_path,
+    )
+    exporters = build_exporters(config, machine)
+    jsonl_exporter = next(e for e in exporters if isinstance(e, JsonlEventExporter))
+    manager = ExportManager(exporters)
+
+    manager.close()
+
+    assert jsonl_exporter._file.closed
+
+
+def test_close_is_safe_when_no_adapter_has_close():
+    manager = ExportManager([_RecordingExporter(), _RecordingExporter()])
+
+    manager.close()  # must not raise
+
+
+def test_a_failing_close_does_not_stop_the_others_from_closing(tmp_path):
+    jsonl_exporter = JsonlEventExporter(tmp_path, session_id="session_a")
+
+    class _FailingCloseExporter:
+        def export(self, events) -> None:
+            pass
+
+        def close(self) -> None:
+            raise RuntimeError("deliberately failing close")
+
+    manager = ExportManager([_FailingCloseExporter(), jsonl_exporter])
+
+    manager.close()  # must not raise
+
+    assert jsonl_exporter._file.closed
+
+
+def test_context_manager_closes_on_exit(tmp_path):
+    machine = PipelineStateMachine(["seat_1"])
+    config = _config(
+        export_overrides={"jsonl": True, "websocket": False}, jsonl_export_dir=tmp_path
+    )
+    exporters = build_exporters(config, machine)
+    jsonl_exporter = exporters[0]
+
+    with ExportManager(exporters) as manager:
+        manager.export(machine.update(_frame(_chip(1, "seat_1"), frame_index=0)))
+
+    assert jsonl_exporter._file.closed
+
+
 def test_failing_adapter_does_not_interrupt_jsonl_or_websocket(tmp_path):
     # AC-23: "absichtlich fehlschlagender Adapter unterbricht weder JSONL
     # noch WebSocket" -- exercised with the real adapters, not fakes.
