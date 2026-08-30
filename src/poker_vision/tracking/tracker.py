@@ -68,13 +68,24 @@ coordinates, not contained within the table, and a real detector (e.g.
 `mock`'s COCO mode) can legitimately report a box that straddles the
 table edge for an object sitting right at the rim -- that is normal
 output, not a bug, and tracking only ever matches on `center` anyway.
+
+REQ-44's core-chain commit policy ("jede Stufe berechnet ihr Update rein,
+ohne eigenen persistenten Zustand direkt zu mutieren") splits what used to
+be one mutating `update()` into `compute_update()` (pure -- reads `self`,
+never writes it) and `commit()` (applies a previously computed
+`TrackerUpdate` to `self`). `update()` itself is kept as the two called
+back-to-back, so every other caller (this module's own tests included)
+sees the exact same mutate-immediately behavior as before; only the
+runner's frame loop needs the two steps split apart, to defer this
+stage's mutation until the whole core chain (tracking -> assignment ->
+state) has succeeded for the frame (see `runner/loop.py`).
 """
 
 from __future__ import annotations
 
-import itertools
 import math
 from collections import defaultdict
+from dataclasses import dataclass
 
 from poker_vision.calibration.geometry import TableDimensions, TablePoint
 from poker_vision.detection.models import Detection, DetectionClass, FrameDetections
@@ -96,6 +107,27 @@ _DEFAULT_STALE_TRACK_TTL_CALLS = 30
 # current frame's own detection count in that class.
 _MAX_KNOWN_TRACKS_PER_CLASS = 50
 
+_KnownTracks = dict[DetectionClass, dict[int, TablePoint]]
+_LastMatchedCall = dict[DetectionClass, dict[int, int]]
+
+
+@dataclass(frozen=True, slots=True)
+class TrackerUpdate:
+    """Pure result of `NearestMatchTracker.compute_update()`.
+
+    Carries this call's output (`tracked_frame`) together with the
+    would-be new internal state (`known`, `last_matched_call`,
+    `call_count`, `next_track_id`) so `commit()` can apply it verbatim,
+    without recomputing anything and without `compute_update()` having
+    touched `self` at all.
+    """
+
+    tracked_frame: TrackedFrame
+    known: _KnownTracks
+    last_matched_call: _LastMatchedCall
+    call_count: int
+    next_track_id: int
+
 
 def _distance(a: TablePoint, b: TablePoint) -> float:
     return math.hypot(a.x - b.x, a.y - b.y)
@@ -111,13 +143,13 @@ def _check_within_table(point: TablePoint, table: TableDimensions, detection: De
 
 
 class NearestMatchTracker:
-    """Stateful, per-class nearest-neighbor track-ID assignment (REQ-23).
+    """Per-class nearest-neighbor track-ID assignment (REQ-23).
 
-    `stale_track_ttl` (calls, not frames -- see `update()`'s docstring)
-    must be at least as large as the largest `n_off` a caller intends to
-    honor once REQ-24's hysteresis is wired on top of this tracker: a track
-    this tracker has already forgotten can never recover its ID, no matter
-    what hysteresis would have decided. Defaults to
+    `stale_track_ttl` (calls, not frames -- see `compute_update()`'s
+    docstring) must be at least as large as the largest `n_off` a caller
+    intends to honor once REQ-24's hysteresis is wired on top of this
+    tracker: a track this tracker has already forgotten can never recover
+    its ID, no matter what hysteresis would have decided. Defaults to
     `_DEFAULT_STALE_TRACK_TTL_CALLS`, a reasonable value only for when no
     such config exists yet.
     """
@@ -131,51 +163,86 @@ class NearestMatchTracker:
         self._max_distance = max_distance
         self._table = table
         self._stale_track_ttl = stale_track_ttl
-        self._next_track_id = itertools.count(1)
+        self._next_track_id = 1
         # Last known table-plane position per class, keyed by track_id.
-        self._known: dict[DetectionClass, dict[int, TablePoint]] = defaultdict(dict)
-        # `update()` call index (not frame_index -- see module docstring)
-        # at which each track was last matched; drives staleness eviction.
-        self._last_matched_call: dict[DetectionClass, dict[int, int]] = defaultdict(dict)
+        self._known: _KnownTracks = {}
+        # `compute_update()` call index (not frame_index -- see module
+        # docstring) at which each track was last matched; drives
+        # staleness eviction.
+        self._last_matched_call: _LastMatchedCall = {}
         self._call_count = 0
 
-    def update(self, frame_detections: FrameDetections) -> TrackedFrame:
-        # Validate before any state changes: a rejected call must be
-        # atomic -- no bumped call counter, no eviction -- so retrying with
-        # corrected detections sees exactly the state before the bad call,
-        # not one that was already (partly) advanced by it. Only `center`
-        # is checked (see module docstring): a box may legitimately extend
-        # past the table edge.
+    def compute_update(self, frame_detections: FrameDetections) -> TrackerUpdate:
+        """Pure computation of this call's tracks and the resulting state.
+
+        Never mutates `self` -- see module docstring. Validates before
+        computing anything: a rejected call must be atomic, so a caller
+        retrying with corrected detections sees exactly the state before
+        the bad call, not a partially-advanced one. Only `center` is
+        checked (see module docstring): a box may legitimately extend
+        past the table edge.
+        """
         for detection in frame_detections.detections:
             _check_within_table(detection.center, self._table, detection)
 
-        self._call_count += 1
+        call_count = self._call_count + 1
+        known: _KnownTracks = {cls: dict(tracks) for cls, tracks in self._known.items()}
+        last_matched_call: _LastMatchedCall = {
+            cls: dict(calls) for cls, calls in self._last_matched_call.items()
+        }
         # Evict before matching, not after: a track that just crossed the
         # TTL this call must not be resurrected by a same-call detection
         # landing on its old position -- matching would otherwise refresh
-        # `_last_matched_call` first and the eviction sweep below would find
-        # nothing left to evict, defeating the point of the TTL.
-        self._evict_stale_tracks()
+        # `last_matched_call` first and the eviction sweep below would
+        # find nothing left to evict, defeating the point of the TTL.
+        self._evict_stale_tracks(known, last_matched_call, call_count)
 
         by_class: dict[DetectionClass, list[Detection]] = defaultdict(list)
         for detection in frame_detections.detections:
             by_class[detection.object_class].append(detection)
 
-        tracks = [
-            track
-            for object_class, detections in by_class.items()
-            for track in self._match_class(object_class, detections)
-        ]
-        return TrackedFrame(
-            schema_version=TRACKING_SCHEMA_VERSION,
-            frame_index=frame_detections.frame_index,
-            tracks=tracks,
+        next_track_id = self._next_track_id
+        tracks: list[TrackedObject] = []
+        for object_class, detections in by_class.items():
+            class_tracks, next_track_id = self._match_class(
+                object_class, detections, known, last_matched_call, call_count, next_track_id
+            )
+            tracks.extend(class_tracks)
+
+        return TrackerUpdate(
+            tracked_frame=TrackedFrame(
+                schema_version=TRACKING_SCHEMA_VERSION,
+                frame_index=frame_detections.frame_index,
+                tracks=tracks,
+            ),
+            known=known,
+            last_matched_call=last_matched_call,
+            call_count=call_count,
+            next_track_id=next_track_id,
         )
 
+    def commit(self, update: TrackerUpdate) -> TrackedFrame:
+        """Apply a previously computed `TrackerUpdate` to `self`."""
+        self._known = update.known
+        self._last_matched_call = update.last_matched_call
+        self._call_count = update.call_count
+        self._next_track_id = update.next_track_id
+        return update.tracked_frame
+
+    def update(self, frame_detections: FrameDetections) -> TrackedFrame:
+        """Compute and immediately commit this call's update (see module docstring)."""
+        return self.commit(self.compute_update(frame_detections))
+
     def _match_class(
-        self, object_class: DetectionClass, detections: list[Detection]
-    ) -> list[TrackedObject]:
-        known = self._known[object_class]
+        self,
+        object_class: DetectionClass,
+        detections: list[Detection],
+        known: _KnownTracks,
+        last_matched_call: _LastMatchedCall,
+        call_count: int,
+        next_track_id: int,
+    ) -> tuple[list[TrackedObject], int]:
+        class_known = known.get(object_class, {})
 
         # Only tracks with at least one within-threshold detection this
         # frame can ever be picked by `optimal_assignment`; dropping the
@@ -184,7 +251,7 @@ class NearestMatchTracker:
         # entire (capped) remembered history.
         cost_by_track_id: dict[int, dict[int, float]] = defaultdict(dict)
         for detection_index, detection in enumerate(detections):
-            for track_id, position in known.items():
+            for track_id, position in class_known.items():
                 distance = _distance(detection.center, position)
                 if distance <= self._max_distance:
                     cost_by_track_id[track_id][detection_index] = distance
@@ -204,19 +271,21 @@ class NearestMatchTracker:
         )
 
         tracks: list[TrackedObject] = []
-        # Start from `known` rather than empty: a track of this class that
-        # isn't matched this frame (e.g. one of two chips is occluded while
-        # the other stays visible) must keep its last position, the same as
-        # a class with zero detections this frame keeps all of its tracks.
-        updated_known: dict[int, TablePoint] = dict(known)
-        last_matched_call = self._last_matched_call[object_class]
+        # Start from `class_known` rather than empty: a track of this class
+        # that isn't matched this frame (e.g. one of two chips is occluded
+        # while the other stays visible) must keep its last position, the
+        # same as a class with zero detections this frame keeps all of its
+        # tracks.
+        updated_known: dict[int, TablePoint] = dict(class_known)
+        class_last_matched_call = last_matched_call.setdefault(object_class, {})
         for detection_index, detection in enumerate(detections):
             if detection_index in assignment:
                 track_id = track_ids[assignment[detection_index]]
             else:
-                track_id = next(self._next_track_id)
+                track_id = next_track_id
+                next_track_id += 1
             updated_known[track_id] = detection.center
-            last_matched_call[track_id] = self._call_count
+            class_last_matched_call[track_id] = call_count
             tracks.append(
                 TrackedObject(
                     track_id=track_id,
@@ -227,33 +296,38 @@ class NearestMatchTracker:
                 )
             )
 
-        self._known[object_class] = updated_known
-        self._enforce_known_track_cap(object_class)
-        return tracks
+        known[object_class] = updated_known
+        self._enforce_known_track_cap(object_class, known, last_matched_call)
+        return tracks, next_track_id
 
-    def _enforce_known_track_cap(self, object_class: DetectionClass) -> None:
-        known = self._known[object_class]
-        overflow = len(known) - _MAX_KNOWN_TRACKS_PER_CLASS
+    def _enforce_known_track_cap(
+        self, object_class: DetectionClass, known: _KnownTracks, last_matched_call: _LastMatchedCall
+    ) -> None:
+        class_known = known[object_class]
+        overflow = len(class_known) - _MAX_KNOWN_TRACKS_PER_CLASS
         if overflow <= 0:
             return
-        last_matched_call = self._last_matched_call[object_class]
+        class_last_matched_call = last_matched_call.setdefault(object_class, {})
         # Evict the least-recently-matched tracks first: within a single
         # over-cap frame they're all equally "fresh" by call count, so ties
-        # fall back to `known`'s insertion order (oldest-created first).
-        least_recent = sorted(known, key=lambda track_id: last_matched_call.get(track_id, 0))
+        # fall back to `class_known`'s insertion order (oldest-created first).
+        least_recent = sorted(
+            class_known, key=lambda track_id: class_last_matched_call.get(track_id, 0)
+        )
         for track_id in least_recent[:overflow]:
-            del known[track_id]
-            last_matched_call.pop(track_id, None)
+            del class_known[track_id]
+            class_last_matched_call.pop(track_id, None)
 
-    def _evict_stale_tracks(self) -> None:
-        for object_class, known in self._known.items():
-            last_matched_call = self._last_matched_call[object_class]
+    def _evict_stale_tracks(
+        self, known: _KnownTracks, last_matched_call: _LastMatchedCall, call_count: int
+    ) -> None:
+        for object_class, class_known in known.items():
+            class_last_matched_call = last_matched_call.setdefault(object_class, {})
             stale = [
                 track_id
-                for track_id in known
-                if self._call_count - last_matched_call.get(track_id, 0)
-                > self._stale_track_ttl
+                for track_id in class_known
+                if call_count - class_last_matched_call.get(track_id, 0) > self._stale_track_ttl
             ]
             for track_id in stale:
-                del known[track_id]
-                last_matched_call.pop(track_id, None)
+                del class_known[track_id]
+                class_last_matched_call.pop(track_id, None)

@@ -25,13 +25,34 @@ and so already agree numerically on a single-table replay.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Literal
 
 from poker_vision.assignment.models import FrameAssignments
 from poker_vision.state.board import count_board_cards
 from poker_vision.state.events import EVENT_SCHEMA_VERSION, HandEndedEvent, HandStartedEvent
 
 HandLifecycleEvent = HandStartedEvent | HandEndedEvent
+
+
+@dataclass(frozen=True, slots=True)
+class HandUpdate:
+    """Pure result of `HandTracker.compute_update()`.
+
+    `transition` is `"started"`/`"ended"` when this frame crosses a hand
+    boundary, `None` otherwise. REQ-44's core-chain commit policy splits
+    what used to be one mutating `update()` into `compute_update()` (pure)
+    and `commit()`; `update()` is kept as the two called back-to-back for
+    standalone callers, `PipelineStateMachine` uses the two steps
+    separately (see `runner/loop.py`).
+    """
+
+    board_active: bool
+    hand_id: int | None
+    next_hand_id: int
+    transition: Literal["started", "ended"] | None
+    frame_index: int
 
 
 class HandTracker:
@@ -59,35 +80,62 @@ class HandTracker:
         self._next_hand_id = 1
         self._sequence = 0
 
-    def update(self, frame_assignments: FrameAssignments) -> list[HandLifecycleEvent]:
+    def compute_update(self, frame_assignments: FrameAssignments) -> HandUpdate:
+        """Pure computation of this frame's hand-lifecycle transition.
+
+        Never mutates `self` -- see module docstring.
+        """
         count = count_board_cards(frame_assignments)
+        frame_index = frame_assignments.frame_index
 
         if count > 0 and not self._board_active:
-            self._board_active = True
-            self._hand_id = self._next_hand_id
-            self._next_hand_id += 1
-            event: HandLifecycleEvent = HandStartedEvent(
-                schema_version=EVENT_SCHEMA_VERSION,
-                sequence=self._next_sequence(),
-                timestamp=datetime.now(UTC),
-                frame_index=frame_assignments.frame_index,
-                hand_id=self._hand_id,
+            return HandUpdate(
+                board_active=True,
+                hand_id=self._next_hand_id,
+                next_hand_id=self._next_hand_id + 1,
+                transition="started",
+                frame_index=frame_index,
             )
-            return [event]
 
         if count == 0 and self._board_active:
-            self._board_active = False
             assert self._hand_id is not None  # set when board_active was set True
-            event = HandEndedEvent(
-                schema_version=EVENT_SCHEMA_VERSION,
-                sequence=self._next_sequence(),
-                timestamp=datetime.now(UTC),
-                frame_index=frame_assignments.frame_index,
+            return HandUpdate(
+                board_active=False,
                 hand_id=self._hand_id,
+                next_hand_id=self._next_hand_id,
+                transition="ended",
+                frame_index=frame_index,
             )
-            return [event]
 
-        return []
+        return HandUpdate(
+            board_active=self._board_active,
+            hand_id=self._hand_id,
+            next_hand_id=self._next_hand_id,
+            transition=None,
+            frame_index=frame_index,
+        )
+
+    def commit(self, update: HandUpdate, timestamp: datetime) -> list[HandLifecycleEvent]:
+        """Apply a previously computed `HandUpdate` to `self`."""
+        self._board_active = update.board_active
+        self._hand_id = update.hand_id
+        self._next_hand_id = update.next_hand_id
+        if update.transition is None:
+            return []
+        assert update.hand_id is not None  # set on every transition
+        event_cls = HandStartedEvent if update.transition == "started" else HandEndedEvent
+        event: HandLifecycleEvent = event_cls(
+            schema_version=EVENT_SCHEMA_VERSION,
+            sequence=self._next_sequence(),
+            timestamp=timestamp,
+            frame_index=update.frame_index,
+            hand_id=update.hand_id,
+        )
+        return [event]
+
+    def update(self, frame_assignments: FrameAssignments) -> list[HandLifecycleEvent]:
+        """Compute and immediately commit this call's update (see module docstring)."""
+        return self.commit(self.compute_update(frame_assignments), datetime.now(UTC))
 
     def _next_sequence(self) -> int:
         sequence = self._sequence
