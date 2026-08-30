@@ -21,7 +21,7 @@ don't guess and don't expand scope beyond what's written there.
 - No force-push to shared branches.
 - No direct commits to `main`.
 
-## Review before merge
+## Codex review loop
 Codex acts as a second, independent reviewer — run locally and manually,
 not as an automated CI gate:
 
@@ -33,6 +33,12 @@ This uses your ChatGPT subscription login (`codex login`), not an API key —
 no per-token billing. Read the findings yourself; if something needs
 fixing, describe it to Claude Code directly in your next message rather
 than through any automated hand-off.
+
+Proceed through implementation → tests → commit → codex review loop
+automatically, without pausing to ask permission at each step. Only stop
+and ask when: (a) a scope decision is genuinely ambiguous, as described
+above, or (b) you're ready to push and open the PR — at that point, ask
+once, with the summary of what was found/fixed.
 
 ## Not allowed
 - Direct pushes to `main`.
