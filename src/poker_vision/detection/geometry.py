@@ -61,6 +61,30 @@ def apply_homography_to_point(
     return TablePoint(x=x, y=y)
 
 
+def apply_inverse_homography_to_point(
+    point: TablePoint,
+    homography: HomographyMatrix,
+    camera: CameraIntrinsics,
+    distortion: DistortionCoefficients,
+) -> PixelPoint:
+    """Map a table-plane point back to raw (distorted) pixel space.
+
+    The exact inverse of `apply_homography_to_point`: homography-inverse
+    first (table -> undistorted pixel), then redistort. Feeding this
+    function's output back through `Detector.detect()` (undistort, then
+    homography-forward) recovers the original table point to well under a
+    pixel. Used by the `mock` detector's Modus A (REQ-18) so a script entry
+    already given in table coordinates can still be returned as a
+    pixel-space `RawDetection`: every `_detect_raw` implementation must
+    stay in pixel space (REQ-5, REQ-17), so this is the one conversion that
+    makes a table-coordinate script entry possible without a second code
+    path in `Detector.detect()`.
+    """
+    ux, uy = _apply_matrix(homography.inverse, point.x, point.y)
+    ((dx, dy),) = _distort_points([(ux, uy)], camera, distortion)
+    return PixelPoint(x=dx, y=dy)
+
+
 def transform_box_to_table(
     box: PixelBox,
     homography: HomographyMatrix,
@@ -137,6 +161,33 @@ def _undistort_points(
         src, camera_matrix, _distortion_vector(distortion), P=camera_matrix
     )
     return [(float(p[0][0]), float(p[0][1])) for p in undistorted]
+
+
+def _distort_points(
+    points: list[tuple[float, float]],
+    camera: CameraIntrinsics,
+    distortion: DistortionCoefficients,
+) -> list[tuple[float, float]]:
+    """Apply lens distortion forward: the exact inverse of `_undistort_points`.
+
+    cv2 has no direct "distort points" call. The standard workaround: treat
+    each undistorted pixel as a normalized point at z=1 and reproject it
+    with `cv2.projectPoints`, which applies the distortion model forward
+    (a closed-form polynomial, not an iterative solve) before re-applying
+    the camera matrix -- unlike `cv2.undistortPoints`, which iterates to
+    invert that same polynomial.
+    """
+    camera_matrix = _camera_matrix(camera)
+    object_points = np.array(
+        [[[(x - camera.cx) / camera.fx, (y - camera.cy) / camera.fy, 1.0]] for x, y in points],
+        dtype=np.float64,
+    )
+    rvec = np.zeros(3, dtype=np.float64)
+    tvec = np.zeros(3, dtype=np.float64)
+    projected, _ = cv2.projectPoints(
+        object_points, rvec, tvec, camera_matrix, _distortion_vector(distortion)
+    )
+    return [(float(p[0][0]), float(p[0][1])) for p in projected]
 
 
 def _apply_matrix(matrix: Matrix3x3, x: float, y: float) -> tuple[float, float]:
