@@ -43,7 +43,7 @@ from poker_vision.assignment.models import (
     ZoneAssignment,
     ZoneKind,
 )
-from poker_vision.calibration.geometry import TablePoint, TablePolygon
+from poker_vision.calibration.geometry import TablePoint, TablePolygon, polygon_signed_area
 from poker_vision.calibration.runtime import CalibrationRuntime
 from poker_vision.calibration.topology import point_in_polygon
 from poker_vision.calibration.zones import CalibrationSeat
@@ -54,11 +54,26 @@ logger = logging.getLogger(__name__)
 
 
 def _centroid(polygon: TablePolygon) -> TablePoint:
+    """Area-weighted polygon centroid (REQ-28's "kleinste Zentroid-Distanz").
+
+    Not the mean of `polygon.points`: a plain vertex average is only the
+    true centroid for a regular polygon, and diverges from it for an
+    irregular or concave one, or one with extra collinear vertices along a
+    straight edge — any of which can flip which seat REQ-28's tie-break
+    picks. `TablePolygon`'s own validator already rejects the zero-area
+    case this formula would divide by (REQ-11).
+    """
     points = polygon.points
-    return TablePoint(
-        x=sum(point.x for point in points) / len(points),
-        y=sum(point.y for point in points) / len(points),
-    )
+    area = polygon_signed_area(points)
+    cx = 0.0
+    cy = 0.0
+    n = len(points)
+    for i in range(n):
+        a, b = points[i], points[(i + 1) % n]
+        cross = a.x * b.y - b.x * a.y
+        cx += (a.x + b.x) * cross
+        cy += (a.y + b.y) * cross
+    return TablePoint(x=cx / (6 * area), y=cy / (6 * area))
 
 
 def _distance(a: TablePoint, b: TablePoint) -> float:
