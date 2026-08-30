@@ -19,13 +19,14 @@ Per REQ-26, which zones a class is tested against differs:
   (REQ-29) tell "in the zone that counts for occupancy" apart from
   "on the table in front of a seat, but not close enough" (AC-15).
 - `card`: only the single global `board_zone`.
-- `dealer_button`: only a seat's `player_area` — a button sitting in front
-  of a seat resolves straight to that seat. The global `dealer_area` zone
-  (REQ-7) belongs to no seat, so a hit there alone can't produce a usable
-  assignment (`state`/REQ-30 needs a seat to drive `dealer_moved`); such a
-  track is reported as unassigned here, the same as one outside every
-  zone, so REQ-27's nearest-seat fallback (still to be implemented) can
-  treat both the same way rather than this stage guessing a seat itself.
+- `dealer_button`: a seat's `player_area` first (so a button sitting in
+  front of a seat resolves straight to that seat), falling back to the
+  global `dealer_area` when no seat's `player_area` contains it. A
+  `dealer_area` match still carries no `seat_id` — REQ-26 only requires
+  testing the button against `dealer_area` in its own right, not resolving
+  it to a seat; turning a seat-less `dealer_area` hit into a seat is
+  REQ-27's nearest-seat fallback, a separate, later stage on top of this
+  one's output, not implemented yet.
 
 REQ-28 ("höchstens einer Zone") only has teeth at the per-class-of-zone
 level above: a point can be inside more than one seat's zone only if seats'
@@ -161,23 +162,29 @@ def _assign_card(track: TrackedObject, calibration: CalibrationRuntime) -> ZoneA
 def _assign_dealer_button(
     track: TrackedObject, calibration: CalibrationRuntime
 ) -> ZoneAssignment | None:
-    # The global `dealer_area` zone (REQ-7) is deliberately not tested here:
-    # it belongs to no seat, so a hit there alone can't resolve to a seat_id
-    # `state` (REQ-30) could use — see the module docstring. Such a track is
-    # left unassigned, same as one outside every zone, for REQ-27's
-    # nearest-seat fallback to pick up later.
     player_area_hits = _matching_seats(calibration.seats, track.center, ZoneKind.PLAYER_AREA)
-    if not player_area_hits:
+    if player_area_hits:
+        seat_id = _resolve_seat(
+            player_area_hits, track.center, track.object_class, track.track_id, ZoneKind.PLAYER_AREA
+        )
+        return ZoneAssignment(
+            schema_version=ASSIGNMENT_SCHEMA_VERSION,
+            track_id=track.track_id,
+            object_class=track.object_class,
+            zone=ZoneKind.PLAYER_AREA,
+            seat_id=seat_id,
+        )
+    # No seat's player_area contains the button: report a dealer_area hit
+    # in its own right (REQ-26), still with no seat_id -- resolving this
+    # to a seat is REQ-27's job, not this stage's.
+    if not point_in_polygon(calibration.zones.dealer_area, track.center):
         return None
-    seat_id = _resolve_seat(
-        player_area_hits, track.center, track.object_class, track.track_id, ZoneKind.PLAYER_AREA
-    )
     return ZoneAssignment(
         schema_version=ASSIGNMENT_SCHEMA_VERSION,
         track_id=track.track_id,
         object_class=track.object_class,
-        zone=ZoneKind.PLAYER_AREA,
-        seat_id=seat_id,
+        zone=ZoneKind.DEALER_AREA,
+        seat_id=None,
     )
 
 
@@ -193,9 +200,11 @@ def assign_zones(tracked_frame: TrackedFrame, calibration: CalibrationRuntime) -
 
     A track that lies in none of its class's candidate zones is simply
     absent from the result — there is no "unassigned" entry to carry, since
-    absence from `assignments` already communicates that both to `state`
-    (REQ-29 ff.) and to REQ-27's nearest-seat fallback, which only applies
-    to a `dealer_button` track missing from this output.
+    absence from `assignments` already communicates that to `state`
+    (REQ-29 ff.). A `dealer_button` assigned `zone=DEALER_AREA` is present
+    in the result but still has no `seat_id`; REQ-27's nearest-seat
+    fallback (not implemented here) is what turns either case — missing
+    entirely, or a seat-less `dealer_area` hit — into a seat.
     """
     assignments = [
         assignment
