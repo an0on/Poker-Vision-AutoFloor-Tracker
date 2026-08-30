@@ -19,20 +19,47 @@ isn't matched, so a detection that briefly drops out (e.g. `mock`'s
 dropout/occlusion) and reappears near where it left off still recovers its
 original `track_id`, rather than starting a new one. Deciding when a track
 should instead be treated as gone is REQ-24's hysteresis (`n_off`), not
-this stage's job. What this stage does do on its own is evict a track that
-has gone unseen for `_STALE_TRACK_TTL_CALLS` calls: a plain growth cap
-against unbounded memory (e.g. a steady trickle of ghost detections each
-minting a track that then never reappears) and against an old ID drifting
-onto an unrelated later object at the same spot -- not REQ-24's hysteresis,
-which is a real state machine with configurable, per-class `n_on`/`n_off`
-counted in frames, not calls.
+this stage's job. What this stage does do on its own, as a plain safety
+net (not REQ-24's hysteresis, which is a real state machine with
+configurable, per-class `n_on`/`n_off` counted in frames, not calls) is
+bound how much of this class's history can pile up:
 
-`update()` also rejects any detection whose center or box lies outside the
+- Evict a track that has gone unseen for `_STALE_TRACK_TTL_CALLS` calls
+  (against an old ID drifting onto an unrelated later object at the same
+  spot).
+- Cap each class's remembered tracks at `_MAX_KNOWN_TRACKS_PER_CLASS`,
+  evicting the least-recently-matched ones first whenever a class would
+  exceed it -- checked every call, not just once the TTL has had time to
+  bite. Without this, a run of detections that never re-match anything
+  (e.g. sustained `mock` ghost/jitter beyond the matching threshold, or
+  simply a lively table) can grow one class's remembered-track count far
+  past this frame's own detection count within a handful of calls, long
+  before the TTL would ever trim it -- and `matching.optimal_assignment`
+  is O((detections + known tracks)^3), so an uncapped few hundred known
+  tracks alone (measured, pure Python) already costs whole seconds per
+  frame, blowing REQ-42's per-frame budget. `_MAX_KNOWN_TRACKS_PER_CLASS`
+  reuses REQ-42's own "<=50 detections/frame" ceiling as the cap, so a
+  single class's assignment problem never exceeds roughly detections +
+  50 candidates, regardless of how detections behave over time.
+
+Before even building the candidate list, tracks with no within-threshold
+detection this frame are also excluded from the columns handed to
+`optimal_assignment`: excluding a candidate that can never be picked
+changes nothing about the result, and keeps the typical-case problem size
+driven by genuine spatial proximity rather than the capped history's full
+size.
+
+`update()` also rejects any detection whose *center* lies outside the
 calibrated table (`CalibrationRuntime.table`) before matching runs at all:
 that can only mean a bug upstream (a bad homography, a detector that
 somehow escaped `Detector.detect()`'s pixel -> table transform), and
 matching against it would silently produce meaningless track positions
-instead of surfacing the problem.
+instead of surfacing the problem. A detection's optional `box` is *not*
+checked against the table: REQ-17 only requires the box to be in table
+coordinates, not contained within the table, and a real detector (e.g.
+`mock`'s COCO mode) can legitimately report a box that straddles the
+table edge for an object sitting right at the rim -- that is normal
+output, not a bug, and tracking only ever matches on `center` anyway.
 """
 
 from __future__ import annotations
@@ -48,8 +75,18 @@ from poker_vision.tracking.models import TRACKING_SCHEMA_VERSION, TrackedFrame, 
 
 # Generous relative to any realistic REQ-24 n_off (default 3, config-bounded
 # small ints): this is a safety net against unbounded growth, not the
-# hysteresis "absent" decision itself.
-_STALE_TRACK_TTL_CALLS = 300
+# hysteresis "absent" decision itself. Bounded further by
+# `_MAX_KNOWN_TRACKS_PER_CLASS` below, which is what actually keeps the
+# assignment problem small within this window.
+_STALE_TRACK_TTL_CALLS = 30
+
+# Reuses REQ-42's own "<=50 detections/frame" ceiling: a single class's
+# remembered-track count never needs to exceed what one frame could ever
+# contain. Enforced every call (not just once the TTL expires) via
+# least-recently-matched eviction, so `optimal_assignment`'s per-class
+# problem size never exceeds roughly this many candidates plus the
+# current frame's own detection count in that class.
+_MAX_KNOWN_TRACKS_PER_CLASS = 50
 
 
 def _distance(a: TablePoint, b: TablePoint) -> float:
@@ -83,12 +120,11 @@ class NearestMatchTracker:
         # Validate before any state changes: a rejected call must be
         # atomic -- no bumped call counter, no eviction -- so retrying with
         # corrected detections sees exactly the state before the bad call,
-        # not one that was already (partly) advanced by it.
+        # not one that was already (partly) advanced by it. Only `center`
+        # is checked (see module docstring): a box may legitimately extend
+        # past the table edge.
         for detection in frame_detections.detections:
             _check_within_table(detection.center, self._table, detection)
-            if detection.box is not None:
-                _check_within_table(detection.box.min, self._table, detection)
-                _check_within_table(detection.box.max, self._table, detection)
 
         self._call_count += 1
         # Evict before matching, not after: a track that just crossed the
@@ -117,14 +153,25 @@ class NearestMatchTracker:
         self, object_class: DetectionClass, detections: list[Detection]
     ) -> list[TrackedObject]:
         known = self._known[object_class]
-        track_ids = list(known.keys())
 
-        valid_cost: dict[tuple[int, int], float] = {}
+        # Only tracks with at least one within-threshold detection this
+        # frame can ever be picked by `optimal_assignment`; dropping the
+        # rest here changes nothing about the result but keeps the typical
+        # -case problem size driven by spatial proximity, not this class's
+        # entire (capped) remembered history.
+        cost_by_track_id: dict[int, dict[int, float]] = defaultdict(dict)
         for detection_index, detection in enumerate(detections):
-            for track_index, track_id in enumerate(track_ids):
-                distance = _distance(detection.center, known[track_id])
+            for track_id, position in known.items():
+                distance = _distance(detection.center, position)
                 if distance <= self._max_distance:
-                    valid_cost[(detection_index, track_index)] = distance
+                    cost_by_track_id[track_id][detection_index] = distance
+        track_ids = list(cost_by_track_id.keys())
+
+        valid_cost: dict[tuple[int, int], float] = {
+            (detection_index, track_index): distance
+            for track_index, track_id in enumerate(track_ids)
+            for detection_index, distance in cost_by_track_id[track_id].items()
+        }
 
         assignment = optimal_assignment(
             row_count=len(detections),
@@ -158,7 +205,22 @@ class NearestMatchTracker:
             )
 
         self._known[object_class] = updated_known
+        self._enforce_known_track_cap(object_class)
         return tracks
+
+    def _enforce_known_track_cap(self, object_class: DetectionClass) -> None:
+        known = self._known[object_class]
+        overflow = len(known) - _MAX_KNOWN_TRACKS_PER_CLASS
+        if overflow <= 0:
+            return
+        last_matched_call = self._last_matched_call[object_class]
+        # Evict the least-recently-matched tracks first: within a single
+        # over-cap frame they're all equally "fresh" by call count, so ties
+        # fall back to `known`'s insertion order (oldest-created first).
+        least_recent = sorted(known, key=lambda track_id: last_matched_call.get(track_id, 0))
+        for track_id in least_recent[:overflow]:
+            del known[track_id]
+            last_matched_call.pop(track_id, None)
 
     def _evict_stale_tracks(self) -> None:
         for object_class, known in self._known.items():

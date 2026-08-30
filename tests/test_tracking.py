@@ -15,7 +15,11 @@ from poker_vision.detection.models import (
     TableBoundingBox,
 )
 from poker_vision.tracking.models import TrackedFrame
-from poker_vision.tracking.tracker import _STALE_TRACK_TTL_CALLS, NearestMatchTracker
+from poker_vision.tracking.tracker import (
+    _MAX_KNOWN_TRACKS_PER_CLASS,
+    _STALE_TRACK_TTL_CALLS,
+    NearestMatchTracker,
+)
 
 MAX_DISTANCE = 0.05
 TABLE = TableDimensions(width=100.0, height=100.0, unit=TableUnit.CM)
@@ -232,6 +236,35 @@ def test_rejected_update_has_no_side_effects_on_the_stale_ttl_clock():
     assert boundary.tracks[0].track_id == first_id
 
 
+# Codex finding: without a hard cap, a burst of never-matching detections
+# within a *single* frame (e.g. 50+ ghosts, all equally "fresh" so the
+# age-based TTL can't distinguish any of them yet) can grow one class's
+# remembered-track count far beyond what any later frame could plausibly
+# match against, making `optimal_assignment`'s O(n^3) cost explode. The
+# per-class cap must bound this immediately, not just eventually via TTL.
+def test_known_tracks_per_class_are_capped_even_within_a_single_frame():
+    tracker = _tracker()
+    count = _MAX_KNOWN_TRACKS_PER_CLASS + 10
+    # Spaced 1.0 apart, i.e. 20x MAX_DISTANCE: no two ever accidentally
+    # match each other.
+    xs = [float(i) for i in range(count)]
+
+    first = tracker.update(_frame(0, [_chip(x, 0.0) for x in xs]))
+    # Capping only bounds what's *remembered*, not what's reported: every
+    # detection in a frame always gets some track_id, this frame.
+    assert len(first.tracks) == count
+    first_ids = {track.center.x: track.track_id for track in first.tracks}
+
+    # Same positions again: anything evicted by the cap after frame 0 must
+    # mint a new ID instead of resuming the old one.
+    second = tracker.update(_frame(1, [_chip(x, 0.0) for x in xs]))
+    second_ids = {track.center.x: track.track_id for track in second.tracks}
+
+    preserved = sum(1 for x in xs if first_ids[x] == second_ids[x])
+    assert preserved <= _MAX_KNOWN_TRACKS_PER_CLASS
+    assert preserved < count
+
+
 def test_track_survives_well_under_the_stale_ttl():
     tracker = _tracker()
     first = tracker.update(_frame(0, [_chip(1.0, 1.0)]))
@@ -258,7 +291,11 @@ def test_detection_center_outside_table_bounds_is_rejected():
         tracker_2.update(_frame(0, [_chip(1.0, TABLE.height + 1.0)]))
 
 
-def test_detection_box_outside_table_bounds_is_rejected():
+# Codex finding: an optional box that straddles the table edge (e.g. an
+# object detected right at the rim) is normal detector output (REQ-17 only
+# requires table coordinates, not containment) and must not be rejected --
+# only the center (what matching actually uses) is checked.
+def test_detection_box_straddling_table_boundary_is_accepted():
     tracker = _tracker()
     detection = Detection(
         object_class=DetectionClass.CHIP,
@@ -269,8 +306,9 @@ def test_detection_box_outside_table_bounds_is_rejected():
             max=TablePoint(x=TABLE.width + 5.0, y=1.5),
         ),
     )
-    with pytest.raises(ValueError, match="outside the calibrated table"):
-        tracker.update(_frame(0, [detection]))
+    tracked = tracker.update(_frame(0, [detection]))
+    assert len(tracked.tracks) == 1
+    assert tracked.tracks[0].box == detection.box
 
 
 def test_detection_exactly_on_table_boundary_is_accepted():
