@@ -25,6 +25,7 @@ adapter deliberately doesn't have.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -35,8 +36,13 @@ from poker_vision.state.events import Event
 
 def _default_session_id() -> str:
     # Colon-free and Windows-safe (see CLAUDE.md: capture must stay portable
-    # to a later Windows/TD phase) while still sorting chronologically.
-    return datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    # to a later Windows/TD phase) while still sorting chronologically. The
+    # timestamp alone isn't collision-resistant -- two exporters created
+    # within the same microsecond would otherwise merge into one file,
+    # violating "eine Datei pro Session" (REQ-34) -- so a short random
+    # suffix guarantees distinct sessions never share a path.
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    return f"{timestamp}_{uuid.uuid4().hex[:8]}"
 
 
 def _validate_session_id(session_id: str) -> str:

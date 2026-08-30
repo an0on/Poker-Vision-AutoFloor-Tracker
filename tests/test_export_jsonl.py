@@ -125,6 +125,18 @@ def test_default_session_id_is_generated_when_omitted(tmp_path):
     exporter.close()
 
 
+def test_default_session_ids_do_not_collide(tmp_path):
+    # Two exporters created back-to-back (potentially within the same
+    # microsecond) must still get distinct sessions/files.
+    exporters = [JsonlEventExporter(tmp_path) for _ in range(20)]
+
+    assert len({e.session_id for e in exporters}) == len(exporters)
+    assert len({e.path for e in exporters}) == len(exporters)
+
+    for exporter in exporters:
+        exporter.close()
+
+
 @pytest.mark.parametrize("session_id", ["../escaped", "sub/session", "/absolute", ".", "..", ""])
 def test_rejects_session_id_that_would_escape_export_dir(tmp_path, session_id):
     with pytest.raises(ValueError, match="session_id"):
