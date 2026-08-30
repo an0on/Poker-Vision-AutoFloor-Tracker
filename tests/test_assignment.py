@@ -136,11 +136,12 @@ def test_dealer_button_in_seat_player_area_assigns_that_seat():
     assert assignment.seat_id == "seat_3"
 
 
-def test_dealer_button_in_dealer_area_outside_any_seat_assigns_dealer_area():
+def test_dealer_button_in_dealer_area_outside_any_seat_is_unassigned():
+    # dealer_area (REQ-7) belongs to no seat, so a hit there alone can't
+    # resolve to a seat_id `state` (REQ-30) could use -- left unassigned
+    # for REQ-27's (not yet implemented) nearest-seat fallback to pick up.
     result = assign_zones(_frame(_track(1, DetectionClass.DEALER_BUTTON, 720, 720)), CALIBRATION)
-    assignment = _only(result)
-    assert assignment.zone == ZoneKind.DEALER_AREA
-    assert assignment.seat_id is None
+    assert result.assignments == []
 
 
 def test_dealer_button_outside_every_zone_is_unassigned():

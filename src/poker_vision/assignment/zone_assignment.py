@@ -19,9 +19,13 @@ Per REQ-26, which zones a class is tested against differs:
   (REQ-29) tell "in the zone that counts for occupancy" apart from
   "on the table in front of a seat, but not close enough" (AC-15).
 - `card`: only the single global `board_zone`.
-- `dealer_button`: a seat's `player_area` first (so a button sitting in
-  front of a seat resolves straight to that seat), falling back to the
-  global `dealer_area` when no seat's `player_area` contains it.
+- `dealer_button`: only a seat's `player_area` — a button sitting in front
+  of a seat resolves straight to that seat. The global `dealer_area` zone
+  (REQ-7) belongs to no seat, so a hit there alone can't produce a usable
+  assignment (`state`/REQ-30 needs a seat to drive `dealer_moved`); such a
+  track is reported as unassigned here, the same as one outside every
+  zone, so REQ-27's nearest-seat fallback (still to be implemented) can
+  treat both the same way rather than this stage guessing a seat itself.
 
 REQ-28 ("höchstens einer Zone") only has teeth at the per-class-of-zone
 level above: a point can be inside more than one seat's zone only if seats'
@@ -157,26 +161,23 @@ def _assign_card(track: TrackedObject, calibration: CalibrationRuntime) -> ZoneA
 def _assign_dealer_button(
     track: TrackedObject, calibration: CalibrationRuntime
 ) -> ZoneAssignment | None:
+    # The global `dealer_area` zone (REQ-7) is deliberately not tested here:
+    # it belongs to no seat, so a hit there alone can't resolve to a seat_id
+    # `state` (REQ-30) could use — see the module docstring. Such a track is
+    # left unassigned, same as one outside every zone, for REQ-27's
+    # nearest-seat fallback to pick up later.
     player_area_hits = _matching_seats(calibration.seats, track.center, ZoneKind.PLAYER_AREA)
-    if player_area_hits:
-        seat_id = _resolve_seat(
-            player_area_hits, track.center, track.object_class, track.track_id, ZoneKind.PLAYER_AREA
-        )
-        return ZoneAssignment(
-            schema_version=ASSIGNMENT_SCHEMA_VERSION,
-            track_id=track.track_id,
-            object_class=track.object_class,
-            zone=ZoneKind.PLAYER_AREA,
-            seat_id=seat_id,
-        )
-    if not point_in_polygon(calibration.zones.dealer_area, track.center):
+    if not player_area_hits:
         return None
+    seat_id = _resolve_seat(
+        player_area_hits, track.center, track.object_class, track.track_id, ZoneKind.PLAYER_AREA
+    )
     return ZoneAssignment(
         schema_version=ASSIGNMENT_SCHEMA_VERSION,
         track_id=track.track_id,
         object_class=track.object_class,
-        zone=ZoneKind.DEALER_AREA,
-        seat_id=None,
+        zone=ZoneKind.PLAYER_AREA,
+        seat_id=seat_id,
     )
 
 

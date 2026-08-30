@@ -24,12 +24,19 @@ class ZoneKind(StrEnum):
     CHIP_ZONE = "chip_zone"
     PLAYER_AREA = "player_area"
     BOARD_ZONE = "board_zone"
-    DEALER_AREA = "dealer_area"
 
 
 # Zone kinds that belong to one specific seat rather than the whole table;
 # a `ZoneAssignment` for one of these always carries `seat_id`, the global
-# ones (`board_zone`, `dealer_area`) never do (see `_check_seat_id_matches_zone`).
+# one (`board_zone`) never does (see `_check_seat_id_matches_zone`).
+#
+# The global `dealer_area` zone from `CalibrationRuntime` has no `ZoneKind`
+# counterpart: it carries no seat of its own (REQ-7), so a `dealer_button`
+# hit there can't produce a usable `ZoneAssignment` until something resolves
+# it to a seat -- REQ-27's nearest-seat fallback, not yet implemented.
+# `zone_assignment._assign_dealer_button` reports such a hit as unassigned
+# (absent from `FrameAssignments`) rather than emitting a seat-less
+# assignment `state` (REQ-30) couldn't act on anyway.
 _SEAT_ZONE_KINDS = frozenset({ZoneKind.CHIP_ZONE, ZoneKind.PLAYER_AREA})
 
 
