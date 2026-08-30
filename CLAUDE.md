@@ -75,8 +75,9 @@ once, with the summary of what was found/fixed.
 - `assignment/` – rein geometrisch: Point-in-Polygon je Zone, Nearest-Seat mit Distanzschwelle. Keine Spiellogik. **Das ist der Teil, den v0.1 mit `mock` durchtestet.**
 - `state/` – State-Machine: Occupancy je Seat (Chips in Zone), Dealer-Seat, Street aus Kartenanzahl in `board_zone`, `hand_started/ended` (Board leer → nicht leer → leer). Emittiert typisierte Events.
 - `export/` – Adapter: `websocket`, `jsonl`, `tournament_director` (Stub bis Windows-Phase).
-- `debug/` – Overlay aus Kalibrierung + Live-State, MJPEG-Endpoint.
+- `debug/` – Overlay aus Kalibrierung + Live-State, MJPEG-Endpoint; nimmt Live-Frames über `LatestFrameHub` vom Runner entgegen (siehe `### Pipeline-Runner`).
 - `tools/` – Dataset-Pipeline: Frame-Sampling aus Continuity/Video, Export für Annotation (CVAT/Label Studio, extern), Trainings-Skript (MPS), CoreML-Export, Modell-Versionierung (`models/vX/` + Metriken-JSON).
+- `runner/` – Pipeline-Orchestrierung: Frame-Loop, Lifecycle (Start/Stop/Signale), CLI-Einstiegspunkt, `FrameContext` (siehe `### Pipeline-Runner`). Einzige Abhängigkeitsrichtung: `runner` → alle Stufen; keine Stufe importiert `runner`.
 
 ### Datenfluss
 1. `capture` → Frame (aufgelöst auf Inferenz-Größe)  
@@ -87,6 +88,134 @@ once, with the summary of what was found/fixed.
 6. `state` → Events (`seat_occupied/vacated`, `dealer_moved`, `street_changed`, `hand_started/ended`)  
 7. `export` + `debug`  
 - Stufen 3–6 laufen ohne Kamera per Replay/Mock in Tests.
+- Die konkrete Laufzeit-Reihenfolge inkl. Fehlerpolitik orchestriert der Runner
+  (siehe `### Pipeline-Runner`): Schritt 2 oben beschreibt die *Anwendung*
+  vorberechneter Kalibrierungs-Matrizen innerhalb der `detection`-Stufe
+  (REQ-17); das *Laden/Validieren* der Kalibrierung selbst ist dort explizit
+  kein Per-Frame-Schritt, sondern läuft einmalig vor Loop-Start.
+
+### Pipeline-Runner
+
+#### Einordnung
+- Neues eigenständiges Paket `src/poker_vision/runner/` — kein `pipeline.py` im Root.
+  - Begründung: Runner umfasst mehrere Concerns (Loop, Lifecycle, CLI, Frame-Kontext);
+    ein Paket hält das konsistent mit der bestehenden Stufen-Struktur.
+- Dateien: `loop.py` (Orchestrierung), `lifecycle.py` (Start/Stop/Signale),
+  `cli.py` (Einstiegspunkt), `context.py` (FrameContext).
+- Abhängigkeitsrichtung strikt einseitig: runner → alle Stufen.
+  Keine Stufe importiert runner; bestehende Module bleiben runner-agnostisch
+  und unverändert (Ausnahme: debug bekommt eine Publish-Schnittstelle, s. u.).
+- `__main__.py` / Console-Script `poker-vision` delegiert an `runner.cli`.
+
+#### Threading-Modell (Annahme, bewusst konservativ)
+- Pipeline-Loop läuft single-threaded und synchron: deterministisch, einfach
+  testbar, keine Race-Conditions in der State Machine, ausreichend für MVP.
+- Nebenläufig nur: MjpegDebugServer (eigener Thread) und ggf.
+  WebSocket-Export (bereits im ExportManager gekapselt).
+
+#### Frame-Iteration (Reihenfolge pro Frame)
+1. capture: Frame holen
+2. detection → tracking → assignment → state (Kernkette)
+3. export: State-Events/Snapshot übergeben (fehlerisoliert, nie blockierend)
+4. debug: Frame + Snapshot in FrameHub publizieren (latest-wins, nie blockierend)
+- calibration ist KEIN Per-Frame-Schritt: einmalig beim Start laden + validieren,
+  Fail-fast bei Fehler (Exit ≠ 0 vor Loop-Start).
+- `FrameContext` (in `context.py`) wird vom Loop pro Frame intern erzeugt und
+  nach jeder Stufe fortgeschrieben: frame_id, timestamp, Raw-Frame,
+  Detections, Tracks, Zonen-Zuordnung, State-Snapshot, Stufen-Fehlerliste.
+  Der Loop ruft jede Stufe weiterhin mit deren bestehender, typisierter
+  Signatur auf und trägt das Ergebnis in den `FrameContext` ein — Stufen
+  erhalten oder importieren `FrameContext` selbst nicht (sonst Verletzung
+  der `runner → Stufen`-Abhängigkeitsrichtung aus `#### Einordnung`).
+  Einheitliche interne Übergabe zwischen Loop-Schritten statt loser
+  Parameter, keine Änderung an Stufen-APIs.
+
+#### Fehlerpolitik je Stufe
+- capture:
+  - EOF bei video_file/image_dir → geordneter Shutdown, Exit-Code 0
+    (normales Laufzeitende, kein Fehler).
+  - Fehler bei Live-Quelle (continuity) → Retry mit Backoff; nach
+    konfigurierbarem Timeout Abbruch mit Exit ≠ 0.
+- detection/tracking/assignment/state (Kernkette):
+  - Exception in einer dieser Stufen → gesamten Frame verwerfen, KEIN
+    partielles Update. State Machine sieht nur vollständig verarbeitete
+    Frames → Event-Sequence-Zähler und Hand-Lifecycle bleiben konsistent.
+  - Voraussetzung dafür (Coding-Konvention, keine Copy-on-Write-/
+    Transaktions-Maschinerie): jede Stufe berechnet ihr Update rein
+    (Rückgabewert), ohne eigenen persistenten Zustand direkt zu mutieren
+    (Tracking-Hysterese/Track-IDs, State-Machine-Zustand). Der Loop wendet
+    die zurückgegebenen Updates erst an — committet sie in
+    Pipeline-Reihenfolge —, nachdem die gesamte Kernkette für den Frame
+    erfolgreich durchlaufen wurde, nicht bereits nach der einzelnen Stufe.
+    Ein Fehler in einer späteren Stufe verhindert damit auch das Commit
+    einer bereits erfolgreich berechneten früheren Stufe; nur so ist
+    „kein partielles Update" oben tatsächlich über die gesamte Kernkette
+    garantiert.
+  - Fehler loggen + Fehlerzähler; nach N konsekutiven Fehlern (config,
+    Default 30) Abbruch mit Exit ≠ 0. Einzelner erfolgreicher Frame
+    resettet den Zähler.
+- export: nutzt bestehende Fehlerisolation des ExportManager; Runner
+  behandelt Export-Fehler nie als fatal.
+- debug: best effort; Fehler beim Publizieren/Rendern beeinflussen den
+  Loop nicht.
+
+#### Backpressure / Pacing
+- Live-Quelle: latest-frame-wins — ist die Verarbeitung langsamer als die
+  Kamera, werden Frames gedroppt (immer aktuellster Frame).
+- Umsetzung in `continuity`: interner Hintergrund-Thread liest kontinuierlich
+  von der Kamera und schreibt in einen thread-sicheren Single-Slot-Puffer
+  (dasselbe latest-wins-Pattern wie `LatestFrameHub` aus REQ-46, nicht
+  `cv2.CAP_PROP_BUFFERSIZE` — dessen Verhalten ist backend-abhängig
+  unzuverlässig). Der Puffer führt einen monoton steigenden Versions-/
+  Sequenzzähler; `get_latest()` liefert jeden Frame genau einmal zurück
+  (kein erneutes Ausliefern desselben Frames, falls der Loop schneller als
+  die Kamera ist — verhindert doppelte `frame_id`s / doppelte
+  Hysterese-Zählung). Der Loop selbst bleibt single-threaded und synchron:
+  er ruft `get_latest()` auf diesem Puffer als kurzen blockierenden Wait
+  mit Timeout ab (`threading.Condition`/`Event`, kein Busy-Spin, kein
+  reines Sleep-Polling) statt `read()` direkt auf der Kamera; das Dropping
+  passiert im Hintergrund-Thread der Capture-Implementierung, nicht im
+  Loop. Gilt ausschließlich für `continuity`.
+- Dateiquellen (`video_file`/`image_dir`): kein Drop, jeder Frame wird
+  verarbeitet (deterministisch, wichtig für Regressionstests); kein
+  Hintergrund-Thread, kein Versionszähler, unverändert synchroner
+  Lesepfad. Kein Realtime-Pacing per Default; optionales `--realtime`-Flag
+  als späteres Nice-to-have, nicht Teil der REQs.
+
+#### capture ↔ debug: FrameHub
+- Neues, thread-sicheres Single-Slot-Objekt `LatestFrameHub`
+  (Ort: `runner/` oder `debug/`, Entscheidung: `debug/`, da es die
+  Konsum-Schnittstelle des Debug-Servers ist):
+  - `publish(frame, context_snapshot)` vom Loop (überschreibt, latest-wins).
+  - `get_latest()` vom MjpegDebugServer.
+  - Trägt denselben Versions-/Sequenzzähler wie der continuity-interne
+    Puffer (gleiches Pattern), hier zur Vermeidung unnötigen erneuten
+    Renderings: der per-Client-Streaming-Thread des MjpegDebugServers
+    ruft `get_latest()` als kurzen blockierenden Wait mit Timeout auf eine
+    neue Version auf, statt denselben Frame im Busy-Loop erneut zu
+    rendern/encodieren. Blockiert wird dabei ausschließlich der jeweilige
+    Debug-Client-Thread (läuft ohnehin eigenständig, siehe
+    Threading-Modell) — nie der Loop oder `publish()` (siehe
+    Fehlerpolitik: debug blockiert den Loop nie). Unabhängig davon: die
+    blockierende Wait-mit-Timeout-Semantik aus Backpressure/Pacing für den
+    continuity-Konsum durch den Loop betrifft einen separaten Puffer mit
+    separatem Konsumenten.
+- Overlay-Rendering bleibt im Debug-Server und passiert on-demand pro
+  verbundenem Client: ohne Client keine Rendering-Kosten im System.
+- Debug-Server wird vom Runner-Lifecycle gestartet/gestoppt (config-gesteuert
+  aktivierbar wie die Export-Adapter), läuft nicht mehr standalone-only;
+  der bestehende Standalone-Betrieb bleibt für isolierte Tests erhalten.
+
+#### Lifecycle
+- Start: Config laden (eine Datei, Pydantic-validiert) → Kalibrierung
+  laden/validieren (fail-fast) → Stufen konstruieren → Debug-Server starten
+  (falls aktiv) → Loop starten.
+- Stop: SIGINT/SIGTERM setzen ein Shutdown-Flag; Loop beendet den aktuellen
+  Frame vollständig, dann: capture schließen → export flush/close →
+  debug stoppen → Exit. Zweites SIGINT = harter Abbruch.
+- CLI: `poker-vision run --config <pfad>`; zusätzlich
+  `poker-vision validate --config <pfad>` (Config + Kalibrierung prüfen,
+  ohne Loop-Start).
 
 ### Bestehender Stand – Entscheidung
 | Teil | Entscheidung | Begründung |

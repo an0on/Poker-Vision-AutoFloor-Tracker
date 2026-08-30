@@ -59,7 +59,7 @@ Damit ist das Gate aus REQ-0.9 passiert; die Arbeit an REQ-1 ff. ist ab hier zul
 - A3: Platzhalter-Erkennung in v0.1 nutzt ausschließlich Bordmittel ohne Training: Skriptdatei, OpenCV-ArUco oder ein vortrainiertes COCO-Standardmodell mit Klassen-Mapping (Fortführung des Phase-0-Ansatzes).
 
 #### Grundlagen
-- REQ-1: Neue Paketstruktur `src/poker_vision/` mit den Modulen `capture`, `calibration`, `detection`, `tracking`, `assignment`, `state`, `export`, `debug`, `tools`; Toolchain Python ≥ 3.11, `uv`, `ruff`, `pytest`. Beginn erst nach Phase-0-Gate (REQ-0.9).
+- REQ-1: Neue Paketstruktur `src/poker_vision/` mit den Modulen `capture`, `calibration`, `detection`, `tracking`, `assignment`, `state`, `export`, `debug`, `tools`, `runner`; Toolchain Python ≥ 3.11, `uv`, `ruff`, `pytest`. Beginn erst nach Phase-0-Gate (REQ-0.9).
 - REQ-2: Eine zentrale Config (Pydantic v2, `schema_version`) für Quelle, Device, Schwellwerte, Hysterese, Ports, Pfade; kein Modul liest Umgebungsvariablen oder Konstanten direkt.
 - REQ-3: Device-Auswahl ausschließlich über Config mit Werten `cpu` | `mps` (`cuda` als reservierter, in v0.1 abgelehnter Wert); kein Modul enthält backend-spezifische Codepfade oder CUDA-Aufrufe.
 - REQ-4: Alle Datenstrukturen (Kalibrierung Authoring + Runtime, Config, Detections, Events, State-Snapshot) sind Pydantic-v2-Modelle mit `schema_version`; unbekannte Felder werden abgelehnt.
@@ -122,6 +122,107 @@ Damit ist das Gate aus REQ-0.9 passiert; die Arbeit an REQ-1 ff. ist ab hier zul
 - REQ-42: Overhead der Stufen 3–6 pro Frame ≤ 10 ms auf dem Zielrechner bei ≤ 50 Detections/Frame (Messung im Replay).
 - REQ-43: `docs/` enthält ADRs für die Architekturentscheidungen dieser Runde, das Phase-0-Ergebnis (Bild + Freigabevermerk) und `docs/archive/` für v1/v2-Kalibrierung und verworfene Skripte; `notes/` wird nach `docs/` überführt.
 
+#### Runner
+
+Entscheidung zur Aufteilung: DREI getrennte REQs statt einer Einheit.
+Begründung: Frame-Loop ist headless mit Mocks unit-testbar, Lifecycle/CLI ist
+ein Integrationstest-Thema, FrameHub berührt das bestehende debug-Modul —
+getrennte REQs ergeben kleinere, unabhängig reviewbare PRs. Die Acceptance
+Criteria stehen wegen ihres Umfangs direkt bei jedem REQ als Checkliste,
+abweichend vom AC-N-Schema im nachfolgenden Abschnitt (siehe dortiger Hinweis).
+
+##### REQ-44 — Frame-Loop-Orchestrierung
+Der Runner orchestriert pro Frame die Kette
+capture → detection → tracking → assignment → state → export → debug
+gemäß der in CLAUDE.md definierten Fehlerpolitik.
+
+Acceptance Criteria:
+- [ ] `runner/loop.py` verarbeitet Frames strikt sequenziell in obiger
+      Reihenfolge; Kalibrierung wird nur einmal beim Start geladen.
+- [ ] Ein `FrameContext` wird vom Loop pro Frame intern erzeugt und nach
+      jeder Stufe fortgeschrieben (frame_id, Detections, Tracks, Zonen-
+      Zuordnung, State-Snapshot, Fehlerliste); Stufen behalten ihre
+      bestehenden typisierten Signaturen und importieren `FrameContext`
+      nicht (kein Bruch der `runner → Stufen`-Abhängigkeitsrichtung).
+- [ ] Exception in detection/tracking/assignment/state verwirft den Frame
+      ohne partielles State-Update (Test: State-Snapshot vor/nach
+      Fehler-Frame identisch, Event-Sequence unverändert).
+- [ ] Coding-Konvention (keine Copy-on-Write-/Transaktions-Maschinerie):
+      jede Stufe der Kernkette berechnet ihr Update rein (Rückgabewert)
+      statt eigenen persistenten Zustand direkt zu mutieren; der Loop
+      committet die Updates (Tracking-Hysterese/Track-IDs, State-Machine-
+      Zustand) in Pipeline-Reihenfolge erst, nachdem die gesamte
+      Kernkette für den Frame erfolgreich war — ein Fehler in einer
+      späteren Stufe verhindert damit auch das Commit einer bereits
+      erfolgreich berechneten früheren Stufe (Test: Tracking-Update einer
+      erfolgreichen `tracking`-Stufe wird NICHT übernommen, wenn die
+      nachfolgende `assignment`- oder `state`-Stufe im selben Frame
+      wirft). Betrifft insbesondere Tracking-Hysterese/Track-IDs
+      (REQ-23, REQ-24) und State-Machine-Zustand (REQ-29–REQ-32);
+      bestehende Implementierungen dieser REQs werden im Rahmen von
+      REQ-44 daraufhin geprüft und bei Nichteinhaltung angepasst (kein
+      eigenes REQ).
+- [ ] N konsekutive Kernketten-Fehler (config, Default 30) beenden den Loop
+      mit Fehlerstatus; ein Erfolgs-Frame resettet den Zähler (Test mit
+      Mock-Detector, der gezielt Fehler wirft).
+- [ ] Export-Fehler beenden den Loop nie (Test mit fehlerhaftem Adapter).
+- [ ] EOF bei video_file/image_dir beendet den Loop regulär (Status "completed").
+- [ ] Vollständiger Loop-Durchlauf ist headless testbar: mock-Detection,
+      image_dir-Capture, jsonl-Export — ohne Kamera, GUI oder Netzwerk.
+- [ ] Bei Live-Quelle (`continuity`) liest ein interner Hintergrund-Thread
+      kontinuierlich und schreibt in einen thread-sicheren Single-Slot-Puffer
+      mit monoton steigendem Versions-/Sequenzzähler (latest-wins, gleiches
+      Pattern wie `LatestFrameHub` aus REQ-46, nicht
+      `cv2.CAP_PROP_BUFFERSIZE`); `get_latest()` liefert jeden Frame genau
+      einmal und blockiert kurz mit Timeout auf einen neuen Frame
+      (`threading.Condition`/`Event`, kein Busy-Spin, kein reines
+      Sleep-Polling) statt direkt `read()` auf der Kamera aufzurufen. Gilt
+      nur für `continuity`; `video_file`/`image_dir` bleiben beim
+      bestehenden synchronen, deterministischen Lesepfad ohne Dropping.
+      Tests: (a) Verarbeitung langsamer als Frame-Rate der Quelle → Loop
+      erhält stets den aktuellsten Frame, kein Backlog, kein Blockieren
+      über den Timeout hinaus; (b) Verarbeitung schneller als Frame-Rate
+      der Quelle → kein Frame wird zweimal verarbeitet (keine doppelten
+      `frame_id`s, keine doppelte Hysterese-Zählung).
+
+##### REQ-45 — CLI-Einstiegspunkt & Lifecycle
+Der Runner ist über ein CLI startbar, config-gesteuert und fährt auf
+SIGINT/SIGTERM sauber herunter.
+
+Acceptance Criteria:
+- [ ] `poker-vision run --config <pfad>` startet die Pipeline; alle
+      Stufen-Konfigurationen kommen aus genau einer Pydantic-validierten Datei.
+- [ ] `poker-vision validate --config <pfad>` prüft Config + Kalibrierung
+      inkl. Zonen-Validierung und endet ohne Loop-Start (Exit 0/≠0).
+- [ ] Ungültige Config oder Kalibrierung → Abbruch vor Loop-Start,
+      Exit ≠ 0, verständliche Fehlermeldung.
+- [ ] SIGINT/SIGTERM: aktueller Frame wird abgeschlossen, Exporte werden
+      geflusht/geschlossen, Debug-Server gestoppt, Exit 0
+      (Test: jsonl-Datei ist nach Signal vollständig und valide).
+- [ ] Zweites SIGINT erzwingt sofortigen Abbruch.
+- [ ] Exit-Codes: 0 = regulär/EOF/Signal, ≠ 0 = Config-/Kalibrierungs-/
+      Fehlerschwellen-Abbruch (dokumentiert).
+
+##### REQ-46 — Debug-Anbindung über LatestFrameHub
+Der Debug-MJPEG-Stream zeigt Live-Frames der laufenden Pipeline über einen
+thread-sicheren Single-Slot-Hub (latest-wins).
+
+Acceptance Criteria:
+- [ ] `LatestFrameHub` mit `publish(frame, snapshot)` / `get_latest()`;
+      publish überschreibt immer (kein Queue-Backlog), thread-sicher
+      (Test: konkurrierendes publish/get ohne Korruption/Deadlock).
+- [ ] Runner publiziert nach jedem erfolgreich verarbeiteten Frame;
+      Fehler-Frames werden nicht publiziert.
+- [ ] Overlay-Rendering erfolgt on-demand im Debug-Server; ohne verbundenen
+      Client findet kein Rendering statt (Test: Render-Funktion wird ohne
+      Client nicht aufgerufen).
+- [ ] Debug-Server wird per Config aktiviert/deaktiviert und vom
+      Runner-Lifecycle gestartet/gestoppt; deaktiviert = keine Ports offen.
+- [ ] Publizieren blockiert den Loop nicht messbar (latest-wins, kein Lock
+      über Rendering-Dauer).
+- [ ] Bestehender Standalone-Betrieb des MjpegDebugServers bleibt für
+      isolierte Tests funktionsfähig.
+
 ### Acceptance criteria (v0.1)
 
 - AC-1 (REQ-1, REQ-41): `uv sync && ruff check && pytest` läuft auf frischem Checkout fehlerfrei; Verzeichnisbaum entspricht der Modulaufteilung; Phase-0-Freigabe (AC-0.7) liegt vor dem ersten Commit unter `src/`.
@@ -151,6 +252,7 @@ Damit ist das Gate aus REQ-0.9 passiert; die Arbeit an REQ-1 ff. ist ab hier zul
 - AC-25 (REQ-39, REQ-40): Alle Tests laufen in CI ohne Kamera; die genannten Fixtures inkl. Phase-0-Bild existieren mit hinterlegter Soll-Event-Sequenz.
 - AC-26 (REQ-42): Benchmark-Test im Replay dokumentiert Median-Overhead der Stufen 3–6 ≤ 10 ms/Frame.
 - AC-27 (REQ-43): Für jede Zeile der Entscheidungstabelle (Behalten/Ändern/Verwerfen) existiert ein ADR oder ein Eintrag in `docs/archive/README`; Phase-0-Ergebnis ist abgelegt.
+- Hinweis: Für REQ-44–REQ-46 (`#### Runner`) sind die Acceptance Criteria wegen ihres Umfangs direkt beim jeweiligen REQ als Checkliste geführt statt in diesem AC-N-Schema.
 
 ### Out of scope (Phase 0 + v0.1)
 
