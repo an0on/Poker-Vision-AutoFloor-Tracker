@@ -42,11 +42,12 @@ def _dealer_area_button(track_id: int, seat_id: str | None) -> ZoneAssignment:
 def test_button_seat1_to_seat2_fixture_matches_ac18():
     tracker = DealerSeatTracker(["seat_1", "seat_2"])
 
-    # button sits at seat 1 for a few frames -- first observation is a
-    # legitimate transition away from "unknown", repeats emit nothing.
+    # button sits at seat 1 for a few frames -- the first observation only
+    # establishes the starting position (no prior seat to have "changed"
+    # from), repeats emit nothing either.
     first = tracker.update(_frame(_player_area_button(1, "seat_1"), frame_index=0))
     steady = tracker.update(_frame(_player_area_button(1, "seat_1"), frame_index=1))
-    assert len(first) == 1
+    assert first == []
     assert steady == []
 
     # button moves to seat 2 -- exactly one dealer_moved(1, 2)
@@ -62,16 +63,24 @@ def test_button_seat1_to_seat2_fixture_matches_ac18():
     assert tracker.snapshot() == "seat_2"
 
 
-# --- first resolution is a transition away from unknown --------------------
+# --- first resolution establishes state silently, no event -----------------
 
 
-def test_first_button_resolution_emits_dealer_moved_from_none():
+def test_first_button_resolution_emits_no_event():
     tracker = DealerSeatTracker(["seat_1"])
     events = tracker.update(_frame(_player_area_button(1, "seat_1"), frame_index=0))
+    assert events == []
+    assert tracker.snapshot() == "seat_1"
+
+
+def test_second_seat_after_first_resolution_emits_dealer_moved():
+    tracker = DealerSeatTracker(["seat_1", "seat_2"])
+    tracker.update(_frame(_player_area_button(1, "seat_1"), frame_index=0))
+    events = tracker.update(_frame(_player_area_button(1, "seat_2"), frame_index=1))
     assert len(events) == 1
-    assert events[0].from_seat is None
-    assert events[0].to_seat == "seat_1"
-    assert events[0].frame_index == 0
+    assert events[0].from_seat == "seat_1"
+    assert events[0].to_seat == "seat_2"
+    assert events[0].frame_index == 1
 
 
 # --- no event without an actual state change --------------------------------
@@ -115,10 +124,12 @@ def test_dealer_area_hit_beyond_threshold_without_seat_id_keeps_last_known_seat(
 def test_dealer_area_fallback_resolution_counts_as_a_seat_change():
     # apply_dealer_nearest_seat_fallback resolves a seat-less dealer_area
     # hit to a seat within threshold -- that resolution is a real seat too.
-    tracker = DealerSeatTracker(["seat_1"])
-    events = tracker.update(_frame(_dealer_area_button(1, "seat_1"), frame_index=0))
+    tracker = DealerSeatTracker(["seat_1", "seat_2"])
+    tracker.update(_frame(_player_area_button(1, "seat_1"), frame_index=0))
+    events = tracker.update(_frame(_dealer_area_button(1, "seat_2"), frame_index=1))
     assert len(events) == 1
-    assert events[0].to_seat == "seat_1"
+    assert events[0].from_seat == "seat_1"
+    assert events[0].to_seat == "seat_2"
 
 
 # --- sequence numbering (REQ-33) --------------------------------------------
@@ -126,8 +137,9 @@ def test_dealer_area_fallback_resolution_counts_as_a_seat_change():
 
 def test_sequence_is_monotonic_across_updates():
     tracker = DealerSeatTracker(["seat_1", "seat_2"])
-    first = tracker.update(_frame(_player_area_button(1, "seat_1"), frame_index=0))
-    second = tracker.update(_frame(_player_area_button(1, "seat_2"), frame_index=1))
+    tracker.update(_frame(_player_area_button(1, "seat_1"), frame_index=0))
+    first = tracker.update(_frame(_player_area_button(1, "seat_2"), frame_index=1))
+    second = tracker.update(_frame(_player_area_button(1, "seat_1"), frame_index=2))
     assert first[0].sequence == 0
     assert second[0].sequence == 1
 

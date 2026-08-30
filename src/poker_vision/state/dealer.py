@@ -35,10 +35,15 @@ class DealerSeatTracker:
     validate that an assignment's `seat_id` is a real seat, the same
     defensive check `SeatOccupancyTracker` makes (REQ-29). Unlike
     occupancy, there is no per-seat `False` starting state here: the
-    dealer seat starts genuinely unknown (`None`), since no button has
-    been observed yet, and the first seat a button resolves to is itself
-    a "Seat-Wechsel" away from that unknown state --
-    `dealer_moved(None, seat)`.
+    dealer seat starts genuinely unknown (`None`), because unlike "seat
+    empty", "no dealer seat" is not a real state the physical button is
+    ever in -- it is only this tracker not having caught up to the
+    button's already-existing position yet. So the *first* seat a button
+    resolves to establishes that starting position silently, with no
+    event; only a seat resolved *after* that counts as an actual
+    "Seat-Wechsel" and emits `dealer_moved(from, to)` (AC-18 -- the
+    "Seat 1 -> Seat 2" fixture emits exactly one event, not one per
+    seat ever observed).
 
     `sequence` numbers emitted events with a private, monotonically
     increasing counter starting at 0, independent of
@@ -83,15 +88,21 @@ class DealerSeatTracker:
         if seat_id == self._dealer_seat:
             return []
 
+        previous_seat = self._dealer_seat
+        self._dealer_seat = seat_id
+        if previous_seat is None:
+            # First resolution ever: establishes the starting position,
+            # not a "Seat-Wechsel" -- no event (AC-18).
+            return []
+
         event = DealerMovedEvent(
             schema_version=EVENT_SCHEMA_VERSION,
             sequence=self._next_sequence(),
             timestamp=datetime.now(UTC),
             frame_index=frame_assignments.frame_index,
-            from_seat=self._dealer_seat,
+            from_seat=previous_seat,
             to_seat=seat_id,
         )
-        self._dealer_seat = seat_id
         return [event]
 
     def _next_sequence(self) -> int:
