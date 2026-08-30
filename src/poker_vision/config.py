@@ -36,6 +36,15 @@ class SourceType(StrEnum):
 
 
 class Resolution(StrictModel):
+    """A pixel width/height pair.
+
+    Used both as `SourceConfig.resolution_cap` (REQ-14: the inference
+    resolution `capture` scales every frame to) and, reusing the same type,
+    as `CalibrationAuthoring`/`CalibrationRuntime`'s `inference_resolution`
+    field — so a calibration explicitly references the resolution its pixel
+    geometry (homography, zones) was authored against.
+    """
+
     width: int = Field(gt=0)
     height: int = Field(gt=0)
 
