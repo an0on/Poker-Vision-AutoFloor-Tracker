@@ -74,6 +74,15 @@ def transform_box_to_table(
     result is the bounding box of many sampled perimeter points (not just
     the four corners, which a curved edge can bulge past), never a literal
     corner-to-corner mapping.
+
+    This is a fixed-sample approximation, not a proven containment
+    guarantee: an extremum landing strictly between two of the
+    `_BOX_EDGE_SAMPLES` points per edge is still possible for a
+    sufficiently distorted or large box, in which case the returned box can
+    be a little too tight. Acceptable for v0.1, where `box` is optional on
+    `Detection` and only mock detectors (REQ-18/19/20) produce one; revisit
+    (adaptive subdivision or an analytic margin) once REQ-8's real
+    calibration and a real detector are in play.
     """
     perimeter = _sample_box_perimeter(box)
     undistorted = _undistort_points(perimeter, camera, distortion)
