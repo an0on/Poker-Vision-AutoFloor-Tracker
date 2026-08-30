@@ -13,11 +13,20 @@ but left seat-less (`zone=DEALER_AREA, seat_id=None`, beyond REQ-27's
 threshold) -- does not change the dealer seat: the last known seat is
 carried forward silently, per REQ-30's "Verschwinden des Buttons ändert
 den Dealer-Seat NICHT" (AC-18).
+
+REQ-44's core-chain commit policy splits what used to be one mutating
+`update()` into `compute_update()` (pure) and `commit()` (applies a
+previously computed `DealerUpdate`, assigning `sequence`/`timestamp` at
+that point). `update()` is kept as the two called back-to-back for
+standalone callers; `PipelineStateMachine` uses the two steps separately
+so this tracker's mutation can be deferred until the whole core chain has
+succeeded for the frame (see `runner/loop.py`).
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from poker_vision.assignment.models import FrameAssignments, ZoneKind
@@ -25,6 +34,22 @@ from poker_vision.detection.models import DetectionClass
 from poker_vision.state.events import EVENT_SCHEMA_VERSION, DealerMovedEvent
 
 _SEAT_RESOLVED_ZONE_KINDS = frozenset({ZoneKind.PLAYER_AREA, ZoneKind.DEALER_AREA})
+
+
+@dataclass(frozen=True, slots=True)
+class DealerUpdate:
+    """Pure result of `DealerSeatTracker.compute_update()`.
+
+    `dealer_seat` is the would-be new value (unchanged from the current
+    one when nothing resolved, or resolved but not a change). `moved` is
+    `(from_seat, to_seat)` when this frame is an actual seat change worth
+    a `dealer_moved` event, `None` otherwise (no seat-resolved button, no
+    change, or the first-ever resolution establishing a starting position).
+    """
+
+    dealer_seat: str | None
+    moved: tuple[str, str] | None
+    frame_index: int
 
 
 class DealerSeatTracker:
@@ -57,34 +82,47 @@ class DealerSeatTracker:
         self._dealer_seat: str | None = None
         self._sequence = 0
 
-    def update(self, frame_assignments: FrameAssignments) -> list[DealerMovedEvent]:
-        seat_id = self._resolve_candidate_seat(frame_assignments)
-        if seat_id is None:
-            # No seat-resolved button this frame -- absent entirely, or
-            # present but still seat-less (REQ-27's threshold missed).
-            # Either way the last known dealer seat carries forward
-            # unchanged, no event (AC-18).
-            return []
+    def compute_update(self, frame_assignments: FrameAssignments) -> DealerUpdate:
+        """Pure computation of this frame's dealer-seat resolution.
 
-        if seat_id == self._dealer_seat:
-            return []
+        Never mutates `self` -- see module docstring.
+        """
+        seat_id = self._resolve_candidate_seat(frame_assignments)
+        frame_index = frame_assignments.frame_index
+        if seat_id is None or seat_id == self._dealer_seat:
+            # No seat-resolved button this frame, or the same seat as
+            # before -- carries forward unchanged, no event (AC-18).
+            return DealerUpdate(dealer_seat=self._dealer_seat, moved=None, frame_index=frame_index)
 
         previous_seat = self._dealer_seat
-        self._dealer_seat = seat_id
         if previous_seat is None:
             # First resolution ever: establishes the starting position,
             # not a "Seat-Wechsel" -- no event (AC-18).
-            return []
+            return DealerUpdate(dealer_seat=seat_id, moved=None, frame_index=frame_index)
 
+        return DealerUpdate(
+            dealer_seat=seat_id, moved=(previous_seat, seat_id), frame_index=frame_index
+        )
+
+    def commit(self, update: DealerUpdate, timestamp: datetime) -> list[DealerMovedEvent]:
+        """Apply a previously computed `DealerUpdate` to `self`."""
+        self._dealer_seat = update.dealer_seat
+        if update.moved is None:
+            return []
+        previous_seat, seat_id = update.moved
         event = DealerMovedEvent(
             schema_version=EVENT_SCHEMA_VERSION,
             sequence=self._next_sequence(),
-            timestamp=datetime.now(UTC),
-            frame_index=frame_assignments.frame_index,
+            timestamp=timestamp,
+            frame_index=update.frame_index,
             from_seat=previous_seat,
             to_seat=seat_id,
         )
         return [event]
+
+    def update(self, frame_assignments: FrameAssignments) -> list[DealerMovedEvent]:
+        """Compute and immediately commit this call's update (see module docstring)."""
+        return self.commit(self.compute_update(frame_assignments), datetime.now(UTC))
 
     def _resolve_candidate_seat(self, frame_assignments: FrameAssignments) -> str | None:
         """Which seat the current dealer_button resolves to this frame -- read-only.

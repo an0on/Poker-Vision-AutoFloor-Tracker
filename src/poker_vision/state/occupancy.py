@@ -10,11 +10,21 @@ does not count -- AC-15 draws that line, not this module.
 Events are emitted only on an actual state change, never once per frame:
 `update()` diffs this frame's occupied set against the last one and stays
 silent for every seat whose occupancy didn't change.
+
+REQ-44's core-chain commit policy splits what used to be one mutating
+`update()` into `compute_update()` (pure) and `commit()` (applies a
+previously computed `OccupancyUpdate`, assigning `sequence`/`timestamp` at
+that point). `update()` is kept as the two called back-to-back for
+standalone callers (this module's own tests, and `PipelineStateMachine`'s
+own `update()`); `PipelineStateMachine.compute_update()`/`commit()` use
+the two steps separately so this tracker's mutation can be deferred until
+the whole core chain has succeeded for the frame (see `runner/loop.py`).
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from poker_vision.assignment.models import FrameAssignments, ZoneKind
@@ -22,6 +32,20 @@ from poker_vision.detection.models import DetectionClass
 from poker_vision.state.events import EVENT_SCHEMA_VERSION, SeatOccupiedEvent, SeatVacatedEvent
 
 SeatOccupancyEvent = SeatOccupiedEvent | SeatVacatedEvent
+
+
+@dataclass(frozen=True, slots=True)
+class OccupancyUpdate:
+    """Pure result of `SeatOccupancyTracker.compute_update()`.
+
+    `changes` is the ordered list of `(seat_id, is_occupied)` transitions
+    this frame -- `commit()` turns each into its event, assigning
+    `sequence`/`timestamp` only at that point.
+    """
+
+    occupied: dict[str, bool]
+    changes: list[tuple[str, bool]]
+    frame_index: int
 
 
 class SeatOccupancyTracker:
@@ -45,27 +69,45 @@ class SeatOccupancyTracker:
         self._occupied: dict[str, bool] = {seat_id: False for seat_id in seat_ids}
         self._sequence = 0
 
-    def update(self, frame_assignments: FrameAssignments) -> list[SeatOccupancyEvent]:
+    def compute_update(self, frame_assignments: FrameAssignments) -> OccupancyUpdate:
+        """Pure computation of this frame's occupancy transitions.
+
+        Never mutates `self` -- see module docstring.
+        """
         occupied_now = self._resolve_occupied_seats(frame_assignments)
 
-        timestamp = datetime.now(UTC)
-        events: list[SeatOccupancyEvent] = []
+        occupied = dict(self._occupied)
+        changes: list[tuple[str, bool]] = []
         for seat_id, was_occupied in self._occupied.items():
             is_occupied = seat_id in occupied_now
             if is_occupied == was_occupied:
                 continue
-            self._occupied[seat_id] = is_occupied
+            occupied[seat_id] = is_occupied
+            changes.append((seat_id, is_occupied))
+        return OccupancyUpdate(
+            occupied=occupied, changes=changes, frame_index=frame_assignments.frame_index
+        )
+
+    def commit(self, update: OccupancyUpdate, timestamp: datetime) -> list[SeatOccupancyEvent]:
+        """Apply a previously computed `OccupancyUpdate` to `self`."""
+        self._occupied = update.occupied
+        events: list[SeatOccupancyEvent] = []
+        for seat_id, is_occupied in update.changes:
             event_cls = SeatOccupiedEvent if is_occupied else SeatVacatedEvent
             events.append(
                 event_cls(
                     schema_version=EVENT_SCHEMA_VERSION,
                     sequence=self._next_sequence(),
                     timestamp=timestamp,
-                    frame_index=frame_assignments.frame_index,
+                    frame_index=update.frame_index,
                     seat=seat_id,
                 )
             )
         return events
+
+    def update(self, frame_assignments: FrameAssignments) -> list[SeatOccupancyEvent]:
+        """Compute and immediately commit this call's update (see module docstring)."""
+        return self.commit(self.compute_update(frame_assignments), datetime.now(UTC))
 
     def _resolve_occupied_seats(self, frame_assignments: FrameAssignments) -> set[str]:
         """Which seats have a chip in their `chip_zone` this frame -- read-only.

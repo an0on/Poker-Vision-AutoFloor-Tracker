@@ -269,14 +269,18 @@ def test_snapshot_blocks_until_a_concurrent_update_finishes():
     entered_update = threading.Event()
     release_update = threading.Event()
 
-    original_dealer_update = machine._dealer.update
+    # `commit()` is the phase that actually mutates state under `self._lock`
+    # (REQ-44: `compute_update()` is pure and unlocked, since there's
+    # nothing for a concurrent snapshot() to observe half-done there) --
+    # blocking there is what demonstrates snapshot() waits for the lock.
+    original_dealer_commit = machine._dealer.commit
 
-    def blocking_dealer_update(frame_assignments):
+    def blocking_dealer_commit(update, timestamp):
         entered_update.set()
         assert release_update.wait(timeout=5), "test setup: release was never signaled"
-        return original_dealer_update(frame_assignments)
+        return original_dealer_commit(update, timestamp)
 
-    machine._dealer.update = blocking_dealer_update
+    machine._dealer.commit = blocking_dealer_commit
 
     update_thread = threading.Thread(
         target=machine.update, args=(_frame(_chip(1, "seat_1"), frame_index=0),)

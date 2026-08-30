@@ -42,21 +42,50 @@ connection could read the four trackers mid-`update()`, after some but not
 all of them have mutated for the current frame, and see a state that never
 existed at any single point in time (e.g. this frame's new dealer seat
 paired with the previous frame's `sequence`).
+
+REQ-44's core-chain commit policy splits what used to be one mutating
+`update()` into `compute_update()` (pure -- validates, then computes every
+sub-tracker's pure update without mutating any of them or `self`) and
+`commit()` (applies all four sub-trackers' updates plus this machine's own
+`sequence`/`frame_index`/`timestamp`, still under `self._lock`). `update()`
+is kept as the two called back-to-back, holding the lock across both, so
+every other caller (this module's own tests included) sees the exact same
+mutate-immediately, atomic-per-call behavior as before; only the runner's
+frame loop needs the two steps split apart, to defer this stage's
+mutation until the whole core chain (tracking -> assignment -> state) has
+succeeded for the frame (see `runner/loop.py`).
 """
 
 from __future__ import annotations
 
 import threading
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from poker_vision.assignment.models import FrameAssignments
-from poker_vision.state.dealer import DealerSeatTracker
+from poker_vision.state.dealer import DealerSeatTracker, DealerUpdate
 from poker_vision.state.events import Event
-from poker_vision.state.hand import HandTracker
-from poker_vision.state.occupancy import SeatOccupancyTracker
+from poker_vision.state.hand import HandTracker, HandUpdate
+from poker_vision.state.occupancy import OccupancyUpdate, SeatOccupancyTracker
 from poker_vision.state.snapshot import STATE_SNAPSHOT_SCHEMA_VERSION, SeatOccupancy, StateSnapshot
-from poker_vision.state.street import StreetTracker
+from poker_vision.state.street import StreetTracker, StreetUpdate
+
+
+@dataclass(frozen=True, slots=True)
+class StateUpdate:
+    """Pure result of `PipelineStateMachine.compute_update()`.
+
+    Bundles all four sub-trackers' own pure updates so `commit()` can
+    apply them in the fixed per-frame order (occupancy, dealer, hand,
+    street) without recomputing anything.
+    """
+
+    occupancy_update: OccupancyUpdate
+    dealer_update: DealerUpdate
+    hand_update: HandUpdate
+    street_update: StreetUpdate
+    frame_index: int
 
 
 class PipelineStateMachine:
@@ -80,29 +109,50 @@ class PipelineStateMachine:
         self._timestamp = datetime.now(UTC)
         self._lock = threading.Lock()
 
-    def update(self, frame_assignments: FrameAssignments) -> list[Event]:
-        """Advance every tracker by one frame, returning its events in sequence order.
+    def compute_update(self, frame_assignments: FrameAssignments) -> StateUpdate:
+        """Pure computation of this frame's update across all four trackers.
+
+        Never mutates `self` or any of the four sub-trackers -- see module
+        docstring. `validate()` runs first so a frame that will be
+        rejected is rejected before anything is even computed, matching
+        `update()`'s existing all-or-nothing guarantee for occupancy/
+        dealer's invariants.
+
+        Not lock-guarded: unlike `commit()`, nothing here mutates shared
+        state, so there is nothing for a concurrent `snapshot()` to
+        observe half-done.
+        """
+        self._occupancy.validate(frame_assignments)
+        self._dealer.validate(frame_assignments)
+        return StateUpdate(
+            occupancy_update=self._occupancy.compute_update(frame_assignments),
+            dealer_update=self._dealer.compute_update(frame_assignments),
+            hand_update=self._hand.compute_update(frame_assignments),
+            street_update=self._street.compute_update(frame_assignments),
+            frame_index=frame_assignments.frame_index,
+        )
+
+    def commit(self, update: StateUpdate) -> list[Event]:
+        """Apply a previously computed `StateUpdate` to all four trackers.
 
         All events produced from this single call share one `timestamp` --
-        the moment this frame was processed -- rather than each tracker's own
-        `datetime.now(UTC)` call, which would otherwise introduce spurious
-        sub-millisecond skew between events that all describe the same frame.
+        the moment this update was committed -- rather than each tracker's
+        own `datetime.now(UTC)` call, which would otherwise introduce
+        spurious sub-millisecond skew between events that all describe the
+        same frame.
         """
         with self._lock:
-            self._occupancy.validate(frame_assignments)
-            self._dealer.validate(frame_assignments)
-
             timestamp = datetime.now(UTC)
 
-            occupancy_events = self._occupancy.update(frame_assignments)
-            dealer_events = self._dealer.update(frame_assignments)
-            hand_events = self._hand.update(frame_assignments)
-            street_events = self._street.update(frame_assignments)
+            occupancy_events = self._occupancy.commit(update.occupancy_update, timestamp)
+            dealer_events = self._dealer.commit(update.dealer_update, timestamp)
+            hand_events = self._hand.commit(update.hand_update, timestamp)
+            street_events = self._street.commit(update.street_update, timestamp)
 
             if street_events:
                 hand_id, _ = self._hand.snapshot()
                 # A street_changed event only fires while the board is non-empty
-                # (count > 0), and HandTracker's update() above already ran for
+                # (count > 0), and HandTracker's commit() above already ran for
                 # this same frame -- so its board-active flag, and thus hand_id,
                 # is guaranteed to already reflect this frame's transition.
                 assert hand_id is not None, (
@@ -127,9 +177,13 @@ class PipelineStateMachine:
                 for event in ordered
             ]
 
-            self._frame_index = frame_assignments.frame_index
+            self._frame_index = update.frame_index
             self._timestamp = timestamp
             return events
+
+    def update(self, frame_assignments: FrameAssignments) -> list[Event]:
+        """Compute and immediately commit this frame's update (see module docstring)."""
+        return self.commit(self.compute_update(frame_assignments))
 
     def _next_sequence(self) -> int:
         sequence = self._sequence

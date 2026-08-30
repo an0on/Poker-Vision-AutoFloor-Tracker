@@ -36,6 +36,18 @@ def test_valid_config_loads_with_defaults():
     assert config.ports.websocket == 8765
     assert config.source.resolution_cap.width == 1920
     assert config.source.resolution_cap.height == 1080
+    assert config.runner.max_consecutive_core_errors == 30
+
+
+# REQ-44: `runner.max_consecutive_core_errors` is overridable and validated.
+def test_runner_max_consecutive_core_errors_is_overridable():
+    config = Config.model_validate(_config(runner={"max_consecutive_core_errors": 5}))
+    assert config.runner.max_consecutive_core_errors == 5
+
+
+def test_runner_max_consecutive_core_errors_must_be_at_least_one():
+    with pytest.raises(ValidationError):
+        Config.model_validate(_config(runner={"max_consecutive_core_errors": 0}))
 
 
 # AC-3: wrong schema_version fails

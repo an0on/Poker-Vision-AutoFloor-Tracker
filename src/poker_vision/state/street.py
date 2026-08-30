@@ -26,6 +26,7 @@ bei leerem Board" -- never on a mere dip to an in-between count.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from poker_vision.assignment.models import FrameAssignments
@@ -33,6 +34,26 @@ from poker_vision.state.board import count_board_cards
 from poker_vision.state.events import EVENT_SCHEMA_VERSION, Street, StreetChangedEvent
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class StreetUpdate:
+    """Pure result of `StreetTracker.compute_update()`.
+
+    `changed_street` is the new street when this frame is an actual
+    forward transition worth a `street_changed` event, `None` otherwise.
+    REQ-44's core-chain commit policy splits what used to be one mutating
+    `update()` into `compute_update()` (pure) and `commit()`; `update()`
+    is kept as the two called back-to-back for standalone callers,
+    `PipelineStateMachine` uses the two steps separately (see
+    `runner/loop.py`).
+    """
+
+    current_street: Street | None
+    board_active: bool
+    hand_id: int
+    changed_street: Street | None
+    frame_index: int
 
 _COUNT_TO_STREET: dict[int, Street] = {3: Street.FLOP, 4: Street.TURN, 5: Street.RIVER}
 
@@ -85,22 +106,39 @@ class StreetTracker:
         self._hand_id = 1
         self._sequence = 0
 
-    def update(self, frame_assignments: FrameAssignments) -> list[StreetChangedEvent]:
-        count = count_board_cards(frame_assignments)
+    def compute_update(self, frame_assignments: FrameAssignments) -> StreetUpdate:
+        """Pure computation of this frame's street transition.
 
-        if count > 0 and not self._board_active:
-            self._board_active = True
-        elif count == 0 and self._board_active:
+        Never mutates `self` -- see module docstring.
+        """
+        count = count_board_cards(frame_assignments)
+        frame_index = frame_assignments.frame_index
+
+        board_active = self._board_active
+        current_street = self._current_street
+        hand_id = self._hand_id
+
+        if count > 0 and not board_active:
+            board_active = True
+        elif count == 0 and board_active:
             # Stable empty board -- hand boundary regardless of whether a
             # valid street was ever reached this hand (AGENTS.md's "Board
             # leer <-> nicht-leer"). Reset the monotonic gate and advance
             # the hand id for the next hand.
-            self._board_active = False
-            self._current_street = None
-            self._hand_id += 1
+            board_active = False
+            current_street = None
+            hand_id += 1
+
+        no_change = StreetUpdate(
+            current_street=current_street,
+            board_active=board_active,
+            hand_id=hand_id,
+            changed_street=None,
+            frame_index=frame_index,
+        )
 
         if count == 0:
-            return []
+            return no_change
 
         street = _COUNT_TO_STREET.get(count)
         if street is None:
@@ -109,23 +147,41 @@ class StreetTracker:
                 "(expected 3, 4, or 5) -- ignoring this frame",
                 count,
             )
-            return []
+            return no_change
 
-        if _STREET_RANK[street] <= _STREET_RANK[self._current_street]:
+        if _STREET_RANK[street] <= _STREET_RANK[current_street]:
             # Not a forward transition within this hand -- a flicker back
             # to an already-passed or same street, ignored silently.
-            return []
+            return no_change
 
-        self._current_street = street
+        return StreetUpdate(
+            current_street=street,
+            board_active=board_active,
+            hand_id=hand_id,
+            changed_street=street,
+            frame_index=frame_index,
+        )
+
+    def commit(self, update: StreetUpdate, timestamp: datetime) -> list[StreetChangedEvent]:
+        """Apply a previously computed `StreetUpdate` to `self`."""
+        self._current_street = update.current_street
+        self._board_active = update.board_active
+        self._hand_id = update.hand_id
+        if update.changed_street is None:
+            return []
         event = StreetChangedEvent(
             schema_version=EVENT_SCHEMA_VERSION,
             sequence=self._next_sequence(),
-            timestamp=datetime.now(UTC),
-            frame_index=frame_assignments.frame_index,
-            hand_id=self._hand_id,
-            street=street,
+            timestamp=timestamp,
+            frame_index=update.frame_index,
+            hand_id=update.hand_id,
+            street=update.changed_street,
         )
         return [event]
+
+    def update(self, frame_assignments: FrameAssignments) -> list[StreetChangedEvent]:
+        """Compute and immediately commit this call's update (see module docstring)."""
+        return self.commit(self.compute_update(frame_assignments), datetime.now(UTC))
 
     def _next_sequence(self) -> int:
         sequence = self._sequence
