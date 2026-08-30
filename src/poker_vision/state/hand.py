@@ -1,0 +1,103 @@
+"""Hand-lifecycle state machine (REQ-32).
+
+`HandTracker` turns each frame's `FrameAssignments` (REQ-26/27, already
+restricted to hysteresis-confirmed tracks -- REQ-24/25) into
+`hand_started`/`hand_ended` events: a hand begins the moment the board goes
+from stably empty to non-empty (at least one `card` track in `board_zone`),
+and ends the moment it goes back to stably empty (AGENTS.md's "Board leer
+-> nicht leer -> leer"). Rank/count of the cards don't matter here -- only
+whether the board is empty or not; turning a count into a street is
+`StreetTracker`'s job (REQ-31), not this one's.
+
+`StreetTracker` reacts to the exact same board-empty <-> non-empty signal
+for its own `hand_id` numbering (see `street.py`'s docstring). Both
+trackers share the one piece of detection logic behind that signal --
+counting `card` tracks in `board_zone` -- via `count_board_cards`
+(`board.py`), so it is computed once and can't drift between the two. Each
+tracker still owns its own private `hand_id` counter, though: this module
+is the canonical source of hand boundaries per REQ-32, but wiring that up
+as the literal, shared value `StreetTracker` uses is REQ-33's job (the
+composing state machine that also unifies the per-tracker `sequence`
+counters into one global one). Because both trackers apply the identical
+rule to the same input stream, their `hand_id` numbers stay in sync on a
+single-table replay in the meantime.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
+from poker_vision.assignment.models import FrameAssignments
+from poker_vision.state.board import count_board_cards
+from poker_vision.state.events import EVENT_SCHEMA_VERSION, HandEndedEvent, HandStartedEvent
+
+HandLifecycleEvent = HandStartedEvent | HandEndedEvent
+
+
+class HandTracker:
+    """Debounced-by-construction: only reacts to already-stable tracks.
+
+    Like `StreetTracker`, there is no seat universe to validate against --
+    `board_zone` is the one global zone this tracker inspects.
+
+    `hand_id` starts at 1 and is assigned the moment a hand starts (the
+    empty -> non-empty transition); the same id is carried on that hand's
+    `hand_ended` event, and only bumps for the *next* hand's
+    `hand_started` (AC-20's "zweite Hand erhält hand_id + 1"). Before the
+    first hand ever starts, no id has been assigned yet.
+
+    `sequence` numbers emitted events with a private, monotonically
+    increasing counter starting at 0, independent of the other trackers'
+    -- composing sibling event sources under one shared, globally monotonic
+    counter is REQ-33's job, not this one's (see `occupancy.py`).
+    """
+
+    def __init__(self) -> None:
+        self._board_active = False
+        self._hand_id: int | None = None
+        self._next_hand_id = 1
+        self._sequence = 0
+
+    def update(self, frame_assignments: FrameAssignments) -> list[HandLifecycleEvent]:
+        count = count_board_cards(frame_assignments)
+
+        if count > 0 and not self._board_active:
+            self._board_active = True
+            self._hand_id = self._next_hand_id
+            self._next_hand_id += 1
+            event: HandLifecycleEvent = HandStartedEvent(
+                schema_version=EVENT_SCHEMA_VERSION,
+                sequence=self._next_sequence(),
+                timestamp=datetime.now(UTC),
+                frame_index=frame_assignments.frame_index,
+                hand_id=self._hand_id,
+            )
+            return [event]
+
+        if count == 0 and self._board_active:
+            self._board_active = False
+            assert self._hand_id is not None  # set when board_active was set True
+            event = HandEndedEvent(
+                schema_version=EVENT_SCHEMA_VERSION,
+                sequence=self._next_sequence(),
+                timestamp=datetime.now(UTC),
+                frame_index=frame_assignments.frame_index,
+                hand_id=self._hand_id,
+            )
+            return [event]
+
+        return []
+
+    def _next_sequence(self) -> int:
+        sequence = self._sequence
+        self._sequence += 1
+        return sequence
+
+    def snapshot(self) -> tuple[int | None, bool]:
+        """`(hand_id, hand_active)` for `StateSnapshot` (REQ-33).
+
+        `hand_id` is the current hand's id while active, the just-ended
+        hand's id right after `hand_ended`, or `None` if no hand has ever
+        started yet.
+        """
+        return self._hand_id, self._board_active
