@@ -36,6 +36,14 @@ class SourceType(StrEnum):
     IMAGE_DIR = "image_dir"
 
 
+class DetectorType(StrEnum):
+    MOCK = "mock"
+    # Registered interface slot for the project-trained model (REQ-22).
+    # Rejected in v0.1 by Config._reject_yolo_detector below, the same way
+    # DeviceType.CUDA is reserved-but-rejected above (AC-13).
+    YOLO = "yolo"
+
+
 class Resolution(StrictModel):
     """A pixel width/height pair.
 
@@ -199,6 +207,7 @@ class PerturbationConfig(StrictModel):
 class Config(StrictModel):
     schema_version: Literal["1.0"]
     device: DeviceType
+    detector: DetectorType = DetectorType.MOCK
     source: SourceConfig
     paths: PathsConfig
     thresholds: ThresholdsConfig = Field(default_factory=ThresholdsConfig)
@@ -214,6 +223,16 @@ class Config(StrictModel):
         if value is DeviceType.CUDA:
             raise ValueError(
                 "device 'cuda' is reserved and not supported in v0.1; use 'cpu' or 'mps'"
+            )
+        return value
+
+    @field_validator("detector")
+    @classmethod
+    def _reject_yolo_detector(cls, value: DetectorType) -> DetectorType:
+        if value is DetectorType.YOLO:
+            raise ValueError(
+                "detector 'yolo' is not available in v0.1 (no trained model yet, "
+                "planned for v0.2); use 'mock'"
             )
         return value
 
