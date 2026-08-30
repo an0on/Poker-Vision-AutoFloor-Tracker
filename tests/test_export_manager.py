@@ -130,6 +130,27 @@ def test_only_one_adapter_enabled_at_a_time(tmp_path, enabled_key, expected_type
     assert [type(e) for e in exporters] == [expected_type]
 
 
+def test_a_failing_adapter_construction_does_not_stop_the_others(tmp_path, caplog):
+    # "Ausfall eines Adapters" covers construction, not just export(): an
+    # unwritable jsonl_export_dir (here: a path whose parent is a plain
+    # file, so mkdir(parents=True) raises) must not prevent the also-enabled
+    # websocket adapter from being built.
+    machine = PipelineStateMachine(["seat_1"])
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory")
+    bad_export_dir = blocker / "sub"
+    config = _config(
+        export_overrides={"jsonl": True, "websocket": True, "tournament_director": False},
+        jsonl_export_dir=bad_export_dir,
+    )
+
+    with caplog.at_level("ERROR"):
+        exporters = build_exporters(config, machine)
+
+    assert [type(e) for e in exporters] == [WebSocketEventExporter]
+    assert any("jsonl" in record.message for record in caplog.records)
+
+
 # --- ExportManager: fans events out to every configured adapter ------------
 
 

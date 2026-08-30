@@ -15,6 +15,17 @@ resulted is `ExportManager`'s only job -- the same split `load_config()`
 (construction) and `Config` (validation) already use elsewhere in this
 project.
 
+"Ausfall eines Adapters" isn't only a failure during `export()`: an
+adapter can just as well fail to come up at all (e.g. `jsonl_export_dir`
+sits under a read-only or otherwise unwritable path), and that too must
+not stop the pipeline -- an unrelated, enabled adapter that *would* have
+constructed fine shouldn't be denied a chance to run because a different
+adapter's constructor raised first. `build_exporters()` therefore
+constructs each enabled adapter under its own try/except, exactly
+mirroring `ExportManager.export()`'s per-adapter isolation, and simply
+omits any adapter whose constructor failed rather than aborting the whole
+batch or unwinding adapters that already succeeded.
+
 `build_exporters()` is also what opens `JsonlEventExporter`'s file handle,
 so `ExportManager` -- the only thing holding a reference to that adapter
 afterwards -- is the one place left that can release it. `close()` closes
@@ -28,7 +39,7 @@ isn't part of every adapter's contract -- only of the ones that need it.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from types import TracebackType
 
 from poker_vision.config import Config
@@ -45,14 +56,36 @@ logger = logging.getLogger(__name__)
 def build_exporters(
     config: Config, state_machine: PipelineStateMachine
 ) -> list[EventExporter]:
-    """Construct one adapter instance per REQ-37a-enabled entry in `config.export`."""
+    """Construct one adapter instance per REQ-37a-enabled entry in `config.export`.
+
+    One enabled adapter failing to construct is skipped, logged, and does
+    not prevent the other enabled adapters from being built.
+    """
+    factories: list[tuple[bool, str, Callable[[], EventExporter]]] = [
+        (
+            config.export.jsonl,
+            "jsonl",
+            lambda: JsonlEventExporter(config.paths.jsonl_export_dir),
+        ),
+        (
+            config.export.websocket,
+            "websocket",
+            lambda: WebSocketEventExporter(state_machine),
+        ),
+        (
+            config.export.tournament_director,
+            "tournament_director",
+            TournamentDirectorExporter,
+        ),
+    ]
     exporters: list[EventExporter] = []
-    if config.export.jsonl:
-        exporters.append(JsonlEventExporter(config.paths.jsonl_export_dir))
-    if config.export.websocket:
-        exporters.append(WebSocketEventExporter(state_machine))
-    if config.export.tournament_director:
-        exporters.append(TournamentDirectorExporter())
+    for enabled, name, factory in factories:
+        if not enabled:
+            continue
+        try:
+            exporters.append(factory())
+        except Exception:
+            logger.exception("failed to construct %s export adapter; skipping it", name)
     return exporters
 
 
