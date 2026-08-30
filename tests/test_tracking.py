@@ -16,8 +16,8 @@ from poker_vision.detection.models import (
 )
 from poker_vision.tracking.models import TrackedFrame
 from poker_vision.tracking.tracker import (
+    _DEFAULT_STALE_TRACK_TTL_CALLS,
     _MAX_KNOWN_TRACKS_PER_CLASS,
-    _STALE_TRACK_TTL_CALLS,
     NearestMatchTracker,
 )
 
@@ -25,8 +25,13 @@ MAX_DISTANCE = 0.05
 TABLE = TableDimensions(width=100.0, height=100.0, unit=TableUnit.CM)
 
 
-def _tracker(max_distance: float = MAX_DISTANCE) -> NearestMatchTracker:
-    return NearestMatchTracker(max_distance=max_distance, table=TABLE)
+def _tracker(
+    max_distance: float = MAX_DISTANCE,
+    stale_track_ttl: int = _DEFAULT_STALE_TRACK_TTL_CALLS,
+) -> NearestMatchTracker:
+    return NearestMatchTracker(
+        max_distance=max_distance, table=TABLE, stale_track_ttl=stale_track_ttl
+    )
 
 
 def _frame(frame_index: int, detections: list[Detection]) -> FrameDetections:
@@ -182,13 +187,35 @@ def test_stale_track_is_forgotten_after_ttl_and_reappearance_gets_a_new_id():
     # Advance the tracker's internal call clock well past the TTL without
     # ever matching the chip class again (a different class's detections,
     # or none at all, both count as calls).
-    for frame_index in range(1, _STALE_TRACK_TTL_CALLS + 2):
+    for frame_index in range(1, _DEFAULT_STALE_TRACK_TTL_CALLS + 2):
         tracker.update(_frame(frame_index, []))
 
     reappeared = tracker.update(
-        _frame(_STALE_TRACK_TTL_CALLS + 2, [_chip(1.0, 1.0)])
+        _frame(_DEFAULT_STALE_TRACK_TTL_CALLS + 2, [_chip(1.0, 1.0)])
     )
     assert reappeared.tracks[0].track_id != first_id
+
+
+# Codex finding: the TTL must be a constructor parameter, not a hardcoded
+# constant -- `HysteresisConfig.n_off` has no configured upper bound, so a
+# caller that wires up a larger n_off later must be able to size this
+# safety net to match, or a dropout the caller's own hysteresis still
+# considers "present" would already have lost its ID here.
+def test_stale_ttl_is_configurable_past_the_default():
+    custom_ttl = _DEFAULT_STALE_TRACK_TTL_CALLS + 20
+    tracker = _tracker(stale_track_ttl=custom_ttl)
+    first = tracker.update(_frame(0, [_chip(1.0, 1.0)]))
+    first_id = first.tracks[0].track_id
+
+    # Well past the *default* TTL, but still under this tracker's own
+    # (larger) configured one: the track must still be alive.
+    for frame_index in range(1, _DEFAULT_STALE_TRACK_TTL_CALLS + 5):
+        tracker.update(_frame(frame_index, []))
+
+    reappeared = tracker.update(
+        _frame(_DEFAULT_STALE_TRACK_TTL_CALLS + 5, [_chip(1.0, 1.0)])
+    )
+    assert reappeared.tracks[0].track_id == first_id
 
 
 # Codex finding: eviction must run before matching, not after -- otherwise
@@ -200,13 +227,13 @@ def test_track_evicted_before_matching_in_the_same_call_it_goes_stale():
     first = tracker.update(_frame(0, [_chip(1.0, 1.0)]))
     first_id = first.tracks[0].track_id
 
-    for frame_index in range(1, _STALE_TRACK_TTL_CALLS + 1):
+    for frame_index in range(1, _DEFAULT_STALE_TRACK_TTL_CALLS + 1):
         tracker.update(_frame(frame_index, []))
 
     # This call is exactly where the chip's age first exceeds the TTL. A
     # detection right on its old position must get a new ID, not revive it.
     boundary = tracker.update(
-        _frame(_STALE_TRACK_TTL_CALLS + 1, [_chip(1.0, 1.0)])
+        _frame(_DEFAULT_STALE_TRACK_TTL_CALLS + 1, [_chip(1.0, 1.0)])
     )
     assert boundary.tracks[0].track_id != first_id
 
@@ -221,17 +248,17 @@ def test_rejected_update_has_no_side_effects_on_the_stale_ttl_clock():
 
     # One call short of the point where the *next* successful call would
     # land exactly on the staleness boundary (age == TTL, not yet stale).
-    for frame_index in range(1, _STALE_TRACK_TTL_CALLS):
+    for frame_index in range(1, _DEFAULT_STALE_TRACK_TTL_CALLS):
         tracker.update(_frame(frame_index, []))
 
     with pytest.raises(ValueError, match="outside the calibrated table"):
-        tracker.update(_frame(_STALE_TRACK_TTL_CALLS, [_chip(-1.0, 1.0)]))
+        tracker.update(_frame(_DEFAULT_STALE_TRACK_TTL_CALLS, [_chip(-1.0, 1.0)]))
 
     # If the rejected call above had still bumped the call counter and run
     # eviction, this call would land one step past the boundary and lose
     # the ID. It must not: the failed call left no trace.
     boundary = tracker.update(
-        _frame(_STALE_TRACK_TTL_CALLS + 1, [_chip(1.0, 1.0)])
+        _frame(_DEFAULT_STALE_TRACK_TTL_CALLS + 1, [_chip(1.0, 1.0)])
     )
     assert boundary.tracks[0].track_id == first_id
 
@@ -270,11 +297,11 @@ def test_track_survives_well_under_the_stale_ttl():
     first = tracker.update(_frame(0, [_chip(1.0, 1.0)]))
     first_id = first.tracks[0].track_id
 
-    for frame_index in range(1, _STALE_TRACK_TTL_CALLS - 1):
+    for frame_index in range(1, _DEFAULT_STALE_TRACK_TTL_CALLS - 1):
         tracker.update(_frame(frame_index, []))
 
     reappeared = tracker.update(
-        _frame(_STALE_TRACK_TTL_CALLS - 1, [_chip(1.0, 1.0)])
+        _frame(_DEFAULT_STALE_TRACK_TTL_CALLS - 1, [_chip(1.0, 1.0)])
     )
     assert reappeared.tracks[0].track_id == first_id
 

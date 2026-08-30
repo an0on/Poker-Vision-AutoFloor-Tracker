@@ -24,9 +24,17 @@ net (not REQ-24's hysteresis, which is a real state machine with
 configurable, per-class `n_on`/`n_off` counted in frames, not calls) is
 bound how much of this class's history can pile up:
 
-- Evict a track that has gone unseen for `_STALE_TRACK_TTL_CALLS` calls
-  (against an old ID drifting onto an unrelated later object at the same
-  spot).
+- Evict a track that has gone unseen for `stale_track_ttl` calls (against
+  an old ID drifting onto an unrelated later object at the same spot).
+  This is a constructor parameter, not a hardcoded constant, precisely
+  because it must not silently outrank a real `n_off`: `HysteresisConfig.
+  n_off` has no configured upper bound, so whoever wires REQ-24's
+  hysteresis on top of this tracker needs to pass a `stale_track_ttl` at
+  least as large as the largest `n_off` in play (across the global value
+  and every per-class override) -- otherwise this safety net could retire
+  a track's ID before hysteresis ever gets to decide it's actually gone.
+  `_DEFAULT_STALE_TRACK_TTL_CALLS` is only a reasonable value for when no
+  such config exists yet (as in this REQ's own tests).
 - Cap each class's remembered tracks at `_MAX_KNOWN_TRACKS_PER_CLASS`,
   evicting the least-recently-matched ones first whenever a class would
   exceed it -- checked every call, not just once the TTL has had time to
@@ -73,12 +81,12 @@ from poker_vision.detection.models import Detection, DetectionClass, FrameDetect
 from poker_vision.tracking.matching import optimal_assignment
 from poker_vision.tracking.models import TRACKING_SCHEMA_VERSION, TrackedFrame, TrackedObject
 
-# Generous relative to any realistic REQ-24 n_off (default 3, config-bounded
-# small ints): this is a safety net against unbounded growth, not the
-# hysteresis "absent" decision itself. Bounded further by
-# `_MAX_KNOWN_TRACKS_PER_CLASS` below, which is what actually keeps the
-# assignment problem small within this window.
-_STALE_TRACK_TTL_CALLS = 30
+# Default for `NearestMatchTracker(stale_track_ttl=...)`: generous relative
+# to HysteresisConfig's own default n_off (3), but this is only a sane
+# fallback for when no hysteresis config is wired up yet -- see the
+# constructor parameter's docstring for why a real n_off must be passed in
+# explicitly once REQ-24 exists.
+_DEFAULT_STALE_TRACK_TTL_CALLS = 30
 
 # Reuses REQ-42's own "<=50 detections/frame" ceiling: a single class's
 # remembered-track count never needs to exceed what one frame could ever
@@ -103,11 +111,26 @@ def _check_within_table(point: TablePoint, table: TableDimensions, detection: De
 
 
 class NearestMatchTracker:
-    """Stateful, per-class nearest-neighbor track-ID assignment (REQ-23)."""
+    """Stateful, per-class nearest-neighbor track-ID assignment (REQ-23).
 
-    def __init__(self, max_distance: float, table: TableDimensions) -> None:
+    `stale_track_ttl` (calls, not frames -- see `update()`'s docstring)
+    must be at least as large as the largest `n_off` a caller intends to
+    honor once REQ-24's hysteresis is wired on top of this tracker: a track
+    this tracker has already forgotten can never recover its ID, no matter
+    what hysteresis would have decided. Defaults to
+    `_DEFAULT_STALE_TRACK_TTL_CALLS`, a reasonable value only for when no
+    such config exists yet.
+    """
+
+    def __init__(
+        self,
+        max_distance: float,
+        table: TableDimensions,
+        stale_track_ttl: int = _DEFAULT_STALE_TRACK_TTL_CALLS,
+    ) -> None:
         self._max_distance = max_distance
         self._table = table
+        self._stale_track_ttl = stale_track_ttl
         self._next_track_id = itertools.count(1)
         # Last known table-plane position per class, keyed by track_id.
         self._known: dict[DetectionClass, dict[int, TablePoint]] = defaultdict(dict)
@@ -229,7 +252,7 @@ class NearestMatchTracker:
                 track_id
                 for track_id in known
                 if self._call_count - last_matched_call.get(track_id, 0)
-                > _STALE_TRACK_TTL_CALLS
+                > self._stale_track_ttl
             ]
             for track_id in stale:
                 del known[track_id]
