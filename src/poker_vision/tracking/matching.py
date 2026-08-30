@@ -89,12 +89,21 @@ def optimal_assignment(
     # dummy rows and `row_count` dummy columns so every real row/column has
     # a "stay unmatched" escape (dummy-real cost = `unmatched_cost`) instead
     # of ever being forced into an invalid pair (cost = `forbidden_cost`).
-    # `unmatched_cost` exceeds every real valid cost and `forbidden_cost`
-    # exceeds the total any combination of escapes could cost, so the
-    # minimum-cost solution never uses a forbidden pair, and strictly
-    # prefers one more valid match over leaving two nodes unmatched.
+    #
+    # `unmatched_cost` must dominate not just one extra edge but an entire
+    # augmenting chain: raising the matched count from k to k+1 can require
+    # reassigning up to `size` edges at once (a chain of displaced rows/
+    # columns), each costing as much as `max_valid_cost`, so the achievable
+    # matchings' costs can differ by close to `size * max_valid_cost`
+    # between cardinalities -- not just one edge's worth. `size *
+    # max_valid_cost` per escape (`+1.0` so it's still positive when
+    # `max_valid_cost` is 0) keeps 2x that comfortably above any such
+    # chain, so the minimum-cost solution always prefers matching one more
+    # pair over leaving two nodes unmatched, whatever chain that requires.
+    # `forbidden_cost` in turn exceeds the total any combination of escapes
+    # could cost, so a real invalid pair is never used either.
     size = row_count + col_count
-    unmatched_cost = max_valid_cost * 2.0
+    unmatched_cost = size * max_valid_cost + 1.0
     forbidden_cost = unmatched_cost * (size + 1) + 1.0
 
     cost = [[0.0] * size for _ in range(size)]

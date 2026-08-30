@@ -67,6 +67,35 @@ def test_more_rows_than_columns_leaves_extra_rows_unmatched():
     assert result == {0: 0}
 
 
+# Codex finding: with 5+ nodes, reaching maximum cardinality can require
+# reassigning a whole chain of existing pairs (an augmenting path), not
+# just adding one edge -- so the "stay unmatched" penalty must dominate the
+# cost of an entire chain, not a single edge. Here, (i, i) for i=0..3 are
+# free (cost 0) direct matches; the only way to also match row 4 is to
+# shift the whole chain 4->0->1->1->2->2->3->3->4 (row4->col0, row0->col1,
+# row1->col2, row2->col3, row3->col4), each edge costing max_valid_cost.
+# A matcher that only weighs single edges against the unmatched penalty
+# settles for the 4 free matches (row 4 and col 4 stranded); the correct
+# answer keeps every row and column matched, even at higher total cost.
+def test_reaching_max_cardinality_can_require_a_whole_chain_of_reassignments():
+    max_valid_cost = 0.05
+    valid_cost = {
+        (0, 0): 0.0,
+        (1, 1): 0.0,
+        (2, 2): 0.0,
+        (3, 3): 0.0,
+        (4, 0): max_valid_cost,
+        (0, 1): max_valid_cost,
+        (1, 2): max_valid_cost,
+        (2, 3): max_valid_cost,
+        (3, 4): max_valid_cost,
+    }
+    result = optimal_assignment(
+        row_count=5, col_count=5, valid_cost=valid_cost, max_valid_cost=max_valid_cost
+    )
+    assert result == {0: 1, 1: 2, 2: 3, 3: 4, 4: 0}
+
+
 def test_more_columns_than_rows_leaves_extra_columns_unmatched():
     result = optimal_assignment(
         row_count=1, col_count=2, valid_cost={(0, 0): 0.1, (0, 1): 0.2}, max_valid_cost=1.0
