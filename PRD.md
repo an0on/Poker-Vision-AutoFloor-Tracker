@@ -139,7 +139,11 @@ gemäß der in CLAUDE.md definierten Fehlerpolitik.
 Acceptance Criteria:
 - [ ] `runner/loop.py` verarbeitet Frames strikt sequenziell in obiger
       Reihenfolge; Kalibrierung wird nur einmal beim Start geladen.
-- [ ] Ein `FrameContext` wird pro Frame erzeugt und durch alle Stufen gereicht.
+- [ ] Ein `FrameContext` wird vom Loop pro Frame intern erzeugt und nach
+      jeder Stufe fortgeschrieben (frame_id, Detections, Tracks, Zonen-
+      Zuordnung, State-Snapshot, Fehlerliste); Stufen behalten ihre
+      bestehenden typisierten Signaturen und importieren `FrameContext`
+      nicht (kein Bruch der `runner → Stufen`-Abhängigkeitsrichtung).
 - [ ] Exception in detection/tracking/assignment/state verwirft den Frame
       ohne partielles State-Update (Test: State-Snapshot vor/nach
       Fehler-Frame identisch, Event-Sequence unverändert).

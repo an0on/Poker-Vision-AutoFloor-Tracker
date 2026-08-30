@@ -120,9 +120,15 @@ once, with the summary of what was found/fixed.
 4. debug: Frame + Snapshot in FrameHub publizieren (latest-wins, nie blockierend)
 - calibration ist KEIN Per-Frame-Schritt: einmalig beim Start laden + validieren,
   Fail-fast bei Fehler (Exit ≠ 0 vor Loop-Start).
-- `FrameContext` (in `context.py`) trägt pro Frame: frame_id, timestamp,
-  Raw-Frame, Detections, Tracks, Zonen-Zuordnung, State-Snapshot,
-  Stufen-Fehlerliste. Einheitliche Übergabe statt loser Parameter.
+- `FrameContext` (in `context.py`) wird vom Loop pro Frame intern erzeugt und
+  nach jeder Stufe fortgeschrieben: frame_id, timestamp, Raw-Frame,
+  Detections, Tracks, Zonen-Zuordnung, State-Snapshot, Stufen-Fehlerliste.
+  Der Loop ruft jede Stufe weiterhin mit deren bestehender, typisierter
+  Signatur auf und trägt das Ergebnis in den `FrameContext` ein — Stufen
+  erhalten oder importieren `FrameContext` selbst nicht (sonst Verletzung
+  der `runner → Stufen`-Abhängigkeitsrichtung aus `#### Einordnung`).
+  Einheitliche interne Übergabe zwischen Loop-Schritten statt loser
+  Parameter, keine Änderung an Stufen-APIs.
 
 #### Fehlerpolitik je Stufe
 - capture:
