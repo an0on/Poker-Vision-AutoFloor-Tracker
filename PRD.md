@@ -148,13 +148,20 @@ Acceptance Criteria:
       ohne partielles State-Update (Test: State-Snapshot vor/nach
       Fehler-Frame identisch, Event-Sequence unverändert).
 - [ ] Coding-Konvention (keine Copy-on-Write-/Transaktions-Maschinerie):
-      jede Stufe der Kernkette berechnet ihr vollständiges Update für den
-      Frame, bevor sie eigenen persistenten Zustand mutiert; nur ein
-      vollständig erfolgreicher Durchlauf committet Mutationen. Betrifft
-      insbesondere Tracking-Hysterese/Track-IDs (REQ-23, REQ-24) und
-      State-Machine-Zustand (REQ-29–REQ-32); bestehende Implementierungen
-      dieser REQs werden im Rahmen von REQ-44 daraufhin geprüft und bei
-      Nichteinhaltung angepasst (kein eigenes REQ).
+      jede Stufe der Kernkette berechnet ihr Update rein (Rückgabewert)
+      statt eigenen persistenten Zustand direkt zu mutieren; der Loop
+      committet die Updates (Tracking-Hysterese/Track-IDs, State-Machine-
+      Zustand) in Pipeline-Reihenfolge erst, nachdem die gesamte
+      Kernkette für den Frame erfolgreich war — ein Fehler in einer
+      späteren Stufe verhindert damit auch das Commit einer bereits
+      erfolgreich berechneten früheren Stufe (Test: Tracking-Update einer
+      erfolgreichen `tracking`-Stufe wird NICHT übernommen, wenn die
+      nachfolgende `assignment`- oder `state`-Stufe im selben Frame
+      wirft). Betrifft insbesondere Tracking-Hysterese/Track-IDs
+      (REQ-23, REQ-24) und State-Machine-Zustand (REQ-29–REQ-32);
+      bestehende Implementierungen dieser REQs werden im Rahmen von
+      REQ-44 daraufhin geprüft und bei Nichteinhaltung angepasst (kein
+      eigenes REQ).
 - [ ] N konsekutive Kernketten-Fehler (config, Default 30) beenden den Loop
       mit Fehlerstatus; ein Erfolgs-Frame resettet den Zähler (Test mit
       Mock-Detector, der gezielt Fehler wirft).

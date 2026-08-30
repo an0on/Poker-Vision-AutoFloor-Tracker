@@ -141,11 +141,16 @@ once, with the summary of what was found/fixed.
     partielles Update. State Machine sieht nur vollständig verarbeitete
     Frames → Event-Sequence-Zähler und Hand-Lifecycle bleiben konsistent.
   - Voraussetzung dafür (Coding-Konvention, keine Copy-on-Write-/
-    Transaktions-Maschinerie): jede Stufe berechnet ihr vollständiges
-    Update für den Frame, bevor sie eigenen persistenten Zustand mutiert
-    (Tracking-Hysterese/Track-IDs, State-Machine-Zustand); nur ein
-    vollständig erfolgreicher Durchlauf committet Mutationen. Nur so ist
-    „kein partielles Update" oben tatsächlich garantiert.
+    Transaktions-Maschinerie): jede Stufe berechnet ihr Update rein
+    (Rückgabewert), ohne eigenen persistenten Zustand direkt zu mutieren
+    (Tracking-Hysterese/Track-IDs, State-Machine-Zustand). Der Loop wendet
+    die zurückgegebenen Updates erst an — committet sie in
+    Pipeline-Reihenfolge —, nachdem die gesamte Kernkette für den Frame
+    erfolgreich durchlaufen wurde, nicht bereits nach der einzelnen Stufe.
+    Ein Fehler in einer späteren Stufe verhindert damit auch das Commit
+    einer bereits erfolgreich berechneten früheren Stufe; nur so ist
+    „kein partielles Update" oben tatsächlich über die gesamte Kernkette
+    garantiert.
   - Fehler loggen + Fehlerzähler; nach N konsekutiven Fehlern (config,
     Default 30) Abbruch mit Exit ≠ 0. Einzelner erfolgreicher Frame
     resettet den Zähler.
@@ -184,12 +189,17 @@ once, with the summary of what was found/fixed.
   - `publish(frame, context_snapshot)` vom Loop (überschreibt, latest-wins).
   - `get_latest()` vom MjpegDebugServer.
   - Trägt denselben Versions-/Sequenzzähler wie der continuity-interne
-    Puffer (gleiches Pattern). Anders als dort ist Mehrfachauslieferung
-    desselben Frames hier unkritisch (MJPEG-Client rendert denselben
-    Frame erneut, kein Zählungsproblem): `get_latest()` bleibt nicht-
-    blockierend/best-effort (siehe Fehlerpolitik — debug blockiert den
-    Loop nie); die blockierende Wait-mit-Timeout-Semantik aus
-    Backpressure/Pacing gilt nur für den continuity-Konsum durch den Loop.
+    Puffer (gleiches Pattern), hier zur Vermeidung unnötigen erneuten
+    Renderings: der per-Client-Streaming-Thread des MjpegDebugServers
+    ruft `get_latest()` als kurzen blockierenden Wait mit Timeout auf eine
+    neue Version auf, statt denselben Frame im Busy-Loop erneut zu
+    rendern/encodieren. Blockiert wird dabei ausschließlich der jeweilige
+    Debug-Client-Thread (läuft ohnehin eigenständig, siehe
+    Threading-Modell) — nie der Loop oder `publish()` (siehe
+    Fehlerpolitik: debug blockiert den Loop nie). Unabhängig davon: die
+    blockierende Wait-mit-Timeout-Semantik aus Backpressure/Pacing für den
+    continuity-Konsum durch den Loop betrifft einen separaten Puffer mit
+    separatem Konsumenten.
 - Overlay-Rendering bleibt im Debug-Server und passiert on-demand pro
   verbundenem Client: ohne Client keine Rendering-Kosten im System.
 - Debug-Server wird vom Runner-Lifecycle gestartet/gestoppt (config-gesteuert
