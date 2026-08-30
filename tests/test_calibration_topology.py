@@ -1,12 +1,16 @@
 import pytest
 
 from poker_vision.calibration import topology as topology_module
-from poker_vision.calibration.geometry import TablePolygon
-from poker_vision.calibration.topology import polygon_contains, polygons_overlap
+from poker_vision.calibration.geometry import TablePoint, TablePolygon
+from poker_vision.calibration.topology import point_in_polygon, polygon_contains, polygons_overlap
 
 
 def _polygon(*coords: tuple[float, float]) -> TablePolygon:
     return TablePolygon(points=[{"x": x, "y": y} for x, y in coords])
+
+
+def _point(x: float, y: float) -> TablePoint:
+    return TablePoint(x=x, y=y)
 
 
 SQUARE_0_100 = _polygon((0, 0), (100, 0), (100, 100), (0, 100))
@@ -79,6 +83,46 @@ def test_contains_edge_dips_into_off_center_notch_rejected():
     # edge still dips into the excluded notch area near its other end.
     inner = _polygon((1, 17), (13, 17), (13, 10), (1, 10))
     assert polygon_contains(NOTCH_OUTER, inner) is False
+
+
+# --- point_in_polygon (REQ-26) -------------------------------------------------
+
+
+def test_point_in_polygon_strictly_inside():
+    assert point_in_polygon(SQUARE_0_100, _point(50, 50)) is True
+
+
+def test_point_in_polygon_strictly_outside():
+    assert point_in_polygon(SQUARE_0_100, _point(150, 50)) is False
+
+
+def test_point_in_polygon_on_boundary_edge_counts_as_inside():
+    assert point_in_polygon(SQUARE_0_100, _point(0, 50)) is True
+
+
+def test_point_in_polygon_on_vertex_counts_as_inside():
+    assert point_in_polygon(SQUARE_0_100, _point(0, 0)) is True
+
+
+def test_point_in_polygon_just_outside_boundary_is_outside():
+    assert point_in_polygon(SQUARE_0_100, _point(-0.5, 50)) is False
+
+
+def test_point_in_polygon_in_concave_notch_is_outside():
+    # U_SHAPE's notch (x in [1, 3], y in [1, 4]) isn't part of the polygon;
+    # a point there must not register as inside even though it sits within
+    # the polygon's bounding box.
+    assert point_in_polygon(U_SHAPE, _point(2, 2)) is False
+
+
+def test_point_in_polygon_on_solid_leg_of_concave_shape_is_inside():
+    assert point_in_polygon(U_SHAPE, _point(0.5, 2)) is True
+
+
+def test_point_in_polygon_propagates_triangulation_failure(monkeypatch):
+    monkeypatch.setattr(topology_module, "_is_ear", lambda polygon, index, orientation: False)
+    with pytest.raises(ValueError, match="triangulation failed"):
+        point_in_polygon(SQUARE_0_100, _point(50, 50))
 
 
 # --- polygons_overlap ---------------------------------------------------------
