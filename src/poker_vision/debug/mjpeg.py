@@ -1,4 +1,5 @@
-"""MJPEG debug endpoint with live overlay (REQ-37).
+"""MJPEG debug endpoint with live overlay (REQ-37), plus the static debug
+page that combines it with the WebSocket event list (REQ-38).
 
 Serves the same kind of "what does the pipeline currently see" view Phase 0
 produced as a single static image (zones, track IDs, rubber-band
@@ -26,23 +27,33 @@ pipeline thread and uvicorn's loop, but adapted from a per-connection queue
 (every distinct message must be delivered) to a single "latest frame" slot
 (only the newest frame is worth showing; a slow consumer skips stale ones
 rather than backing up).
+
+`GET /` serves `static/index.html` (REQ-38): a plain HTML/CSS/JS file, no
+frontend framework and no build step, that shows the `/mjpeg` stream next
+to a live list fed by the `websocket` export adapter's `/ws` (REQ-35). The
+only thing not fixed at authoring time is which port that adapter runs
+on, since it's a separate FastAPI app from this one -- `_render_debug_page()`
+fills that one placeholder into the static file's text once at server
+construction, which is a fixed startup-time substitution, not a build step
+or per-request templating.
 """
 
 from __future__ import annotations
 
 import asyncio
 import threading
+from pathlib import Path
 
 import cv2
 import numpy as np
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 
 from poker_vision.assignment.models import FrameAssignments
 from poker_vision.calibration.runtime import CalibrationRuntime
 from poker_vision.capture.frame import Frame
-from poker_vision.config import Config
+from poker_vision.config import Config, PortsConfig
 from poker_vision.debug.overlay import render_overlay
 from poker_vision.state.machine import PipelineStateMachine
 from poker_vision.tracking.models import TrackedFrame
@@ -50,23 +61,43 @@ from poker_vision.tracking.models import TrackedFrame
 _BOUNDARY = b"frame"
 _POLL_INTERVAL_SECONDS = 0.01
 _JPEG_ENCODE_PARAMS = [int(cv2.IMWRITE_JPEG_QUALITY), 80]
+_DEBUG_PAGE_TEMPLATE = Path(__file__).parent / "static" / "index.html"
 
 
 class MjpegDebugServer:
-    """Renders and serves the debug overlay as an MJPEG stream (REQ-37)."""
+    """Renders and serves the debug overlay as an MJPEG stream (REQ-37),
+    plus the static debug page that combines it with the WebSocket event
+    list (REQ-38).
+    """
 
     def __init__(
-        self, calibration: CalibrationRuntime, state_machine: PipelineStateMachine
+        self,
+        calibration: CalibrationRuntime,
+        state_machine: PipelineStateMachine,
+        websocket_port: int = PortsConfig().websocket,
     ) -> None:
         self._calibration = calibration
         self._state_machine = state_machine
         self._lock = threading.Lock()
         self._latest_jpeg: bytes | None = None
+        # `websocket_port` is baked into the page once here rather than on
+        # every request: the value is fixed for this server's lifetime (it
+        # comes from `Config.ports.websocket`), so re-rendering it per
+        # request would just repeat the same substitution for no benefit.
+        # The page itself stays a genuinely static HTML/CSS/JS file on disk
+        # (REQ-38, "ohne Frontend-Framework und ohne Build-Schritt") -- this
+        # is a single startup-time placeholder substitution, not templating
+        # per request and not a build step.
+        self._debug_page = _render_debug_page(websocket_port)
         self.app = FastAPI()
         self._register_routes()
 
     def _register_routes(self) -> None:
         app = self.app
+
+        @app.get("/")
+        def debug_page() -> HTMLResponse:
+            return HTMLResponse(self._debug_page)
 
         @app.get("/mjpeg")
         def mjpeg(request: Request) -> StreamingResponse:
@@ -133,6 +164,18 @@ def _encode_jpeg(image: np.ndarray) -> bytes:
     return encoded.tobytes()
 
 
+def _render_debug_page(websocket_port: int) -> str:
+    """Fill the one placeholder `static/index.html` carries: the WebSocket
+    port to connect to. The page loads `/mjpeg` as a same-origin relative
+    URL (it's served by this same `MjpegDebugServer`), but the WebSocket
+    export adapter (REQ-35) runs as a separate FastAPI app on its own port,
+    so the page has no other way to learn it without going back to the
+    server for it -- there is no per-connection origin to infer it from.
+    """
+    template = _DEBUG_PAGE_TEMPLATE.read_text(encoding="utf-8")
+    return template.replace("{{WS_PORT}}", str(websocket_port))
+
+
 def build_debug_server(
     config: Config, calibration: CalibrationRuntime, state_machine: PipelineStateMachine
 ) -> MjpegDebugServer | None:
@@ -145,4 +188,4 @@ def build_debug_server(
     """
     if not config.debug.enabled:
         return None
-    return MjpegDebugServer(calibration, state_machine)
+    return MjpegDebugServer(calibration, state_machine, websocket_port=config.ports.websocket)
