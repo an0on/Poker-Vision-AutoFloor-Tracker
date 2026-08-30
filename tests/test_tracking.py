@@ -187,6 +187,26 @@ def test_stale_track_is_forgotten_after_ttl_and_reappearance_gets_a_new_id():
     assert reappeared.tracks[0].track_id != first_id
 
 
+# Codex finding: eviction must run before matching, not after -- otherwise
+# a detection landing on a track's old position in the exact call where it
+# crosses the TTL would refresh `_last_matched_call` first, and the
+# eviction sweep that call would then find nothing stale to remove.
+def test_track_evicted_before_matching_in_the_same_call_it_goes_stale():
+    tracker = _tracker()
+    first = tracker.update(_frame(0, [_chip(1.0, 1.0)]))
+    first_id = first.tracks[0].track_id
+
+    for frame_index in range(1, _STALE_TRACK_TTL_CALLS + 1):
+        tracker.update(_frame(frame_index, []))
+
+    # This call is exactly where the chip's age first exceeds the TTL. A
+    # detection right on its old position must get a new ID, not revive it.
+    boundary = tracker.update(
+        _frame(_STALE_TRACK_TTL_CALLS + 1, [_chip(1.0, 1.0)])
+    )
+    assert boundary.tracks[0].track_id != first_id
+
+
 def test_track_survives_well_under_the_stale_ttl():
     tracker = _tracker()
     first = tracker.update(_frame(0, [_chip(1.0, 1.0)]))

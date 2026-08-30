@@ -81,6 +81,12 @@ class NearestMatchTracker:
 
     def update(self, frame_detections: FrameDetections) -> TrackedFrame:
         self._call_count += 1
+        # Evict before matching, not after: a track that just crossed the
+        # TTL this call must not be resurrected by a same-call detection
+        # landing on its old position -- matching would otherwise refresh
+        # `_last_matched_call` first and the eviction sweep below would find
+        # nothing left to evict, defeating the point of the TTL.
+        self._evict_stale_tracks()
 
         for detection in frame_detections.detections:
             _check_within_table(detection.center, self._table, detection)
@@ -97,7 +103,6 @@ class NearestMatchTracker:
             for object_class, detections in by_class.items()
             for track in self._match_class(object_class, detections)
         ]
-        self._evict_stale_tracks()
         return TrackedFrame(
             schema_version=TRACKING_SCHEMA_VERSION,
             frame_index=frame_detections.frame_index,
