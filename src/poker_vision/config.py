@@ -168,6 +168,34 @@ class CocoDetectionConfig(StrictModel):
         return value
 
 
+class PerturbationConfig(StrictModel):
+    """`mock` detector perturbation wrapper config (REQ-21).
+
+    Not a fourth mock mode: wraps any other `Detector` (Modus A/B/C, or
+    later `yolo`) to inject reproducible stress into its otherwise-clean
+    output, so tracking/hysteresis (REQ-23/REQ-24) can be exercised against
+    dropout and noise, not just ideal detections. All perturbations are
+    drawn from one `random.Random(seed)`, so the same seed against the same
+    wrapped detector reproduces the exact same sequence (REQ-21's "fester
+    Seed").
+    """
+
+    seed: int
+    position_jitter_std: float = Field(default=0.0, ge=0.0)
+    dropout_probability: float = Field(default=0.0, ge=0.0, le=1.0)
+    ghost_probability: float = Field(default=0.0, ge=0.0, le=1.0)
+    ghost_classes: list[DetectionClass] = Field(default_factory=lambda: list(DetectionClass))
+    ghost_confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _check_ghost_classes_present_if_needed(self) -> PerturbationConfig:
+        if self.ghost_probability > 0.0 and not self.ghost_classes:
+            raise ValueError(
+                "perturbation.ghost_classes must not be empty when ghost_probability > 0"
+            )
+        return self
+
+
 class Config(StrictModel):
     schema_version: Literal["1.0"]
     device: DeviceType
@@ -178,6 +206,7 @@ class Config(StrictModel):
     ports: PortsConfig = Field(default_factory=PortsConfig)
     aruco: ArucoDetectionConfig | None = None
     coco: CocoDetectionConfig | None = None
+    perturbation: PerturbationConfig | None = None
 
     @field_validator("device")
     @classmethod
