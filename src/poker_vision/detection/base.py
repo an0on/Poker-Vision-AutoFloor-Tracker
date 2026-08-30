@@ -4,9 +4,14 @@ Concrete detectors (`mock` modes A/B/C - REQ-18/19/20, `yolo` - REQ-22) only
 ever implement `_detect_raw`, returning `RawDetection`s in pixel space.
 `Detector.detect` is the one path from a raw detection to the stage's public
 output (`FrameDetections`), and it is the only place that calls the
-pixel -> table transform: no subclass has a way to construct a `Detection`
-directly, so a detector cannot leave the stage without going through the
-homography (REQ-5, REQ-17).
+pixel -> table transform (undistort, then homography - see detection/
+geometry.py): no subclass has a way to construct a `Detection` directly, so
+a detector cannot leave the stage without going through it (REQ-5, REQ-17).
+
+`detect` also rejects a frame whose pixel size doesn't match the
+calibration's `inference_resolution`: the homography/camera intrinsics are
+only valid for the pixel grid they were solved against, and a
+smaller-than-cap frame (REQ-14) can otherwise diverge from it silently.
 """
 
 from __future__ import annotations
@@ -57,14 +62,19 @@ class Detector(ABC):
         """Return this frame's detections in pixel space."""
 
     def detect(self, frame: Frame) -> FrameDetections:
+        self._check_resolution(frame)
         raw_detections = self._detect_raw(frame)
         homography = self._calibration.homography
+        camera = self._calibration.camera
+        distortion = self._calibration.distortion
         detections = [
             Detection(
                 object_class=raw.object_class,
                 confidence=raw.confidence,
-                center=apply_homography_to_point(raw.center, homography),
-                box=transform_box_to_table(raw.box, homography) if raw.box is not None else None,
+                center=apply_homography_to_point(raw.center, homography, camera, distortion),
+                box=transform_box_to_table(raw.box, homography, camera, distortion)
+                if raw.box is not None
+                else None,
             )
             for raw in raw_detections
         ]
@@ -73,3 +83,17 @@ class Detector(ABC):
             frame_index=frame.frame_index,
             detections=detections,
         )
+
+    def _check_resolution(self, frame: Frame) -> None:
+        # The homography/camera intrinsics are only valid for the pixel grid
+        # they were solved against; `apply_resolution_cap` leaves a
+        # smaller-than-cap frame unchanged, so its size can silently diverge
+        # from that (REQ-14) without this check.
+        expected = self._calibration.inference_resolution
+        height, width = frame.image.shape[:2]
+        if (width, height) != (expected.width, expected.height):
+            raise ValueError(
+                f"frame resolution {width}x{height} does not match calibration's "
+                f"inference_resolution {expected.width}x{expected.height} "
+                f"(source: {frame.source_id})"
+            )

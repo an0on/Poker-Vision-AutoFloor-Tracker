@@ -7,7 +7,8 @@ from datetime import UTC, datetime
 import numpy as np
 import pytest
 
-from poker_vision.calibration.geometry import PixelPoint, TablePoint
+from poker_vision.calibration.camera import CameraIntrinsics, DistortionCoefficients
+from poker_vision.calibration.geometry import PixelPoint
 from poker_vision.calibration.homography import HomographyMatrix
 from poker_vision.calibration.runtime import CalibrationRuntime
 from poker_vision.capture.frame import Frame
@@ -18,6 +19,13 @@ from poker_vision.detection.geometry import (
     transform_box_to_table,
 )
 from poker_vision.detection.models import DetectionClass
+
+# Zero distortion: apply_homography_to_point/transform_box_to_table always
+# undistort first, and these geometry-only tests want to isolate the
+# homography math, so distortion is neutralised rather than exercised here
+# (the `Detector.detect()` tests below cover the combined pipeline).
+ZERO_DISTORTION = DistortionCoefficients()
+NEUTRAL_CAMERA = CameraIntrinsics(fx=1000.0, fy=1000.0, cx=500.0, cy=500.0)
 
 VALID_SEATS: list[dict] = [
     {
@@ -80,7 +88,9 @@ def _runtime(forward: list[list[float]], inverse: list[list[float]]) -> Calibrat
         "schema_version": "1.0",
         "table_id": "test_table",
         "based_on": "calibration/instance.json",
-        "inference_resolution": {"width": 1920, "height": 1080},
+        # Matches _frame()'s 10x10 image, so the resolution guard in
+        # Detector.detect() doesn't reject these fixtures.
+        "inference_resolution": {"width": 10, "height": 10},
         "camera": {"fx": 1400.0, "fy": 1400.0, "cx": 960.0, "cy": 540.0},
         "distortion": {"k1": 0.0, "k2": 0.0, "p1": 0.0, "p2": 0.0, "k3": 0.0},
         "homography": {"forward": forward, "inverse": inverse},
@@ -131,24 +141,35 @@ def test_box_center_matches_phase0_reference_values():
 
 def test_apply_homography_to_point_scale_translate():
     homography = HomographyMatrix(forward=SCALE_TRANSLATE_FORWARD, inverse=SCALE_TRANSLATE_INVERSE)
-    result = apply_homography_to_point(PixelPoint(x=10.0, y=10.0), homography)
-    assert result == TablePoint(x=30.0, y=50.0)
+    result = apply_homography_to_point(
+        PixelPoint(x=10.0, y=10.0), homography, NEUTRAL_CAMERA, ZERO_DISTORTION
+    )
+    assert result.x == pytest.approx(30.0)
+    assert result.y == pytest.approx(50.0)
 
 
 def test_transform_box_to_table_scale_translate():
     homography = HomographyMatrix(forward=SCALE_TRANSLATE_FORWARD, inverse=SCALE_TRANSLATE_INVERSE)
-    box = transform_box_to_table((0.0, 0.0, 10.0, 10.0), homography)
-    assert box.min == TablePoint(x=10.0, y=20.0)
-    assert box.max == TablePoint(x=30.0, y=50.0)
+    box = transform_box_to_table(
+        (0.0, 0.0, 10.0, 10.0), homography, NEUTRAL_CAMERA, ZERO_DISTORTION
+    )
+    assert box.min.x == pytest.approx(10.0)
+    assert box.min.y == pytest.approx(20.0)
+    assert box.max.x == pytest.approx(30.0)
+    assert box.max.y == pytest.approx(50.0)
 
 
 def test_transform_box_to_table_handles_rotation():
     # A homography need not preserve axis alignment; the result must be the
     # bounding box of all four transformed corners, not a corner remap.
     homography = HomographyMatrix(forward=ROTATE_90_FORWARD, inverse=ROTATE_90_INVERSE)
-    box = transform_box_to_table((0.0, 0.0, 10.0, 20.0), homography)
-    assert box.min == TablePoint(x=-20.0, y=0.0)
-    assert box.max == TablePoint(x=0.0, y=10.0)
+    box = transform_box_to_table(
+        (0.0, 0.0, 10.0, 20.0), homography, NEUTRAL_CAMERA, ZERO_DISTORTION
+    )
+    assert box.min.x == pytest.approx(-20.0)
+    assert box.min.y == pytest.approx(0.0)
+    assert box.max.x == pytest.approx(0.0)
+    assert box.max.y == pytest.approx(10.0)
 
 
 def test_apply_homography_to_point_rejects_horizon_point():
@@ -159,7 +180,25 @@ def test_apply_homography_to_point_rejects_horizon_point():
     inverse = [[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, -1.0]]
     homography = HomographyMatrix(forward=forward, inverse=inverse)
     with pytest.raises(ValueError, match="horizon"):
-        apply_homography_to_point(PixelPoint(x=0.0, y=0.0), homography)
+        apply_homography_to_point(
+            PixelPoint(x=0.0, y=0.0), homography, NEUTRAL_CAMERA, ZERO_DISTORTION
+        )
+
+
+def test_apply_homography_to_point_undistorts_before_transform():
+    # A camera with real distortion: undistorting (cx, cy) is a no-op
+    # (the distortion model is centred there), so the principal point must
+    # map through the identity homography unchanged. This fails if
+    # apply_homography_to_point skips undistortion (P1 fix).
+    camera = CameraIntrinsics(fx=1000.0, fy=1000.0, cx=50.0, cy=40.0)
+    distortion = DistortionCoefficients(k1=0.2, k2=0.05)
+    identity = HomographyMatrix(
+        forward=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        inverse=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    )
+    result = apply_homography_to_point(PixelPoint(x=50.0, y=40.0), identity, camera, distortion)
+    assert result.x == pytest.approx(50.0, abs=1e-6)
+    assert result.y == pytest.approx(40.0, abs=1e-6)
 
 
 # --- Detector: interface + AC-10 transform boundary -------------------------
@@ -190,11 +229,14 @@ def test_detect_transforms_center_and_box_into_table_coordinates():
     assert detection.confidence == 0.9
     # AC-10: the output centre is the *transformed* table point, never the
     # raw pixel value the stub handed in.
-    assert detection.center == TablePoint(x=30.0, y=50.0)
-    assert detection.center != TablePoint(x=raw.center.x, y=raw.center.y)
+    assert detection.center.x == pytest.approx(30.0)
+    assert detection.center.y == pytest.approx(50.0)
+    assert (detection.center.x, detection.center.y) != (raw.center.x, raw.center.y)
     assert detection.box is not None
-    assert detection.box.min == TablePoint(x=10.0, y=20.0)
-    assert detection.box.max == TablePoint(x=30.0, y=50.0)
+    assert detection.box.min.x == pytest.approx(10.0)
+    assert detection.box.min.y == pytest.approx(20.0)
+    assert detection.box.max.x == pytest.approx(30.0)
+    assert detection.box.max.y == pytest.approx(50.0)
 
 
 def test_detect_without_raw_box_leaves_detection_box_none():
@@ -219,3 +261,21 @@ def test_detect_empty_raw_detections_yields_empty_frame():
 
     assert result.frame_index == 3
     assert result.detections == []
+
+
+def test_detect_rejects_frame_resolution_mismatch():
+    # _runtime()'s calibration is authored against a 10x10 inference
+    # resolution (matching _frame()); a frame of any other size means the
+    # homography/camera intrinsics no longer apply to its pixel grid (P2
+    # fix) and must be rejected rather than silently mis-transformed.
+    calibration = _runtime(SCALE_TRANSLATE_FORWARD, SCALE_TRANSLATE_INVERSE)
+    detector = _StubDetector(calibration, [])
+    mismatched_frame = Frame(
+        image=np.zeros((20, 20, 3), dtype=np.uint8),
+        timestamp=datetime.now(UTC),
+        frame_index=0,
+        source_id="test",
+    )
+
+    with pytest.raises(ValueError, match="resolution"):
+        detector.detect(mismatched_frame)

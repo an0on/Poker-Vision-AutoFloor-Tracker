@@ -7,11 +7,21 @@ route through it so all detectors agree on the same method.
 
 `apply_homography_to_point`/`transform_box_to_table` are the pixel -> table
 transform itself, applied here in the detection stage so nothing behind it
-ever sees pixel coordinates (REQ-5).
+ever sees pixel coordinates (REQ-5). `HomographyMatrix.forward` is defined
+for *undistorted* pixel coordinates (see calibration/homography.py), so both
+functions undistort via the calibration's camera/distortion parameters
+before applying it -- REQ-8 owns image-level undistortion and the CLI that
+bundles it with the homography into one authoring stage, but a raw
+detector's per-point pixel coordinates still need this correction wherever
+the homography is applied, so it happens here too.
 """
 
 from __future__ import annotations
 
+import cv2
+import numpy as np
+
+from poker_vision.calibration.camera import CameraIntrinsics, DistortionCoefficients
 from poker_vision.calibration.geometry import Matrix3x3, PixelPoint, TablePoint
 from poker_vision.calibration.homography import HomographyMatrix
 from poker_vision.detection.models import TableBoundingBox
@@ -31,14 +41,25 @@ def box_center(box: PixelBox) -> PixelPoint:
     return PixelPoint(x=(x1 + x2) / 2.0, y=(y1 + y2) / 2.0)
 
 
-def apply_homography_to_point(point: PixelPoint, homography: HomographyMatrix) -> TablePoint:
-    """Map one pixel-space point onto the table plane via the forward homography."""
-    x, y = _apply_matrix(homography.forward, point.x, point.y)
+def apply_homography_to_point(
+    point: PixelPoint,
+    homography: HomographyMatrix,
+    camera: CameraIntrinsics,
+    distortion: DistortionCoefficients,
+) -> TablePoint:
+    """Undistort one pixel-space point, then map it onto the table plane."""
+    ((ux, uy),) = _undistort_points([(point.x, point.y)], camera, distortion)
+    x, y = _apply_matrix(homography.forward, ux, uy)
     return TablePoint(x=x, y=y)
 
 
-def transform_box_to_table(box: PixelBox, homography: HomographyMatrix) -> TableBoundingBox:
-    """Map a pixel-space box onto the table plane as an axis-aligned box.
+def transform_box_to_table(
+    box: PixelBox,
+    homography: HomographyMatrix,
+    camera: CameraIntrinsics,
+    distortion: DistortionCoefficients,
+) -> TableBoundingBox:
+    """Undistort a pixel-space box's four corners, then map them onto the table plane.
 
     A homography can rotate/skew, so the four transformed corners are not
     generally axis-aligned in table space; the result is their bounding
@@ -46,13 +67,44 @@ def transform_box_to_table(box: PixelBox, homography: HomographyMatrix) -> Table
     """
     x1, y1, x2, y2 = box
     corners = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
-    transformed = [_apply_matrix(homography.forward, x, y) for x, y in corners]
+    undistorted = _undistort_points(corners, camera, distortion)
+    transformed = [_apply_matrix(homography.forward, x, y) for x, y in undistorted]
     xs = [x for x, _ in transformed]
     ys = [y for _, y in transformed]
     return TableBoundingBox(
         min=TablePoint(x=min(xs), y=min(ys)),
         max=TablePoint(x=max(xs), y=max(ys)),
     )
+
+
+def _camera_matrix(camera: CameraIntrinsics) -> np.ndarray:
+    return np.array(
+        [[camera.fx, 0.0, camera.cx], [0.0, camera.fy, camera.cy], [0.0, 0.0, 1.0]],
+        dtype=np.float64,
+    )
+
+
+def _distortion_vector(distortion: DistortionCoefficients) -> np.ndarray:
+    return np.array(
+        [distortion.k1, distortion.k2, distortion.p1, distortion.p2, distortion.k3],
+        dtype=np.float64,
+    )
+
+
+def _undistort_points(
+    points: list[tuple[float, float]],
+    camera: CameraIntrinsics,
+    distortion: DistortionCoefficients,
+) -> list[tuple[float, float]]:
+    """Undo lens distortion, returning points back in pixel units (not normalized)."""
+    src = np.array([[list(p)] for p in points], dtype=np.float64)
+    camera_matrix = _camera_matrix(camera)
+    # P=camera_matrix re-projects into the same pixel units the homography
+    # was solved against, instead of cv2's default normalized coordinates.
+    undistorted = cv2.undistortPoints(
+        src, camera_matrix, _distortion_vector(distortion), P=camera_matrix
+    )
+    return [(float(p[0][0]), float(p[0][1])) for p in undistorted]
 
 
 def _apply_matrix(matrix: Matrix3x3, x: float, y: float) -> tuple[float, float]:
