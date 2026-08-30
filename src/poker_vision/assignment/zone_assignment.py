@@ -56,7 +56,7 @@ from poker_vision.assignment.models import (
     ZoneAssignment,
     ZoneKind,
 )
-from poker_vision.calibration.geometry import TablePoint, TablePolygon, polygon_signed_area
+from poker_vision.calibration.geometry import TablePoint, TablePolygon, polygon_centroid
 from poker_vision.calibration.runtime import CalibrationRuntime
 from poker_vision.calibration.topology import point_in_polygon
 from poker_vision.calibration.zones import CalibrationSeat
@@ -64,29 +64,6 @@ from poker_vision.detection.models import DetectionClass
 from poker_vision.tracking.models import TrackedFrame, TrackedObject
 
 logger = logging.getLogger(__name__)
-
-
-def _centroid(polygon: TablePolygon) -> TablePoint:
-    """Area-weighted polygon centroid (REQ-28's "kleinste Zentroid-Distanz").
-
-    Not the mean of `polygon.points`: a plain vertex average is only the
-    true centroid for a regular polygon, and diverges from it for an
-    irregular or concave one, or one with extra collinear vertices along a
-    straight edge — any of which can flip which seat REQ-28's tie-break
-    picks. `TablePolygon`'s own validator already rejects the zero-area
-    case this formula would divide by (REQ-11).
-    """
-    points = polygon.points
-    area = polygon_signed_area(points)
-    cx = 0.0
-    cy = 0.0
-    n = len(points)
-    for i in range(n):
-        a, b = points[i], points[(i + 1) % n]
-        cross = a.x * b.y - b.x * a.y
-        cx += (a.x + b.x) * cross
-        cy += (a.y + b.y) * cross
-    return TablePoint(x=cx / (6 * area), y=cy / (6 * area))
 
 
 def _distance(a: TablePoint, b: TablePoint) -> float:
@@ -123,7 +100,9 @@ def _resolve_seat(
     """
     if len(candidates) == 1:
         return candidates[0][0]
-    ranked = sorted(candidates, key=lambda candidate: _distance(center, _centroid(candidate[1])))
+    ranked = sorted(
+        candidates, key=lambda candidate: _distance(center, polygon_centroid(candidate[1]))
+    )
     logger.warning(
         "track %d (%s) matched %d seats' %s (%s); assigning nearest seat '%s' by centroid distance",
         track_id,
@@ -230,7 +209,7 @@ def assign_zones(tracked_frame: TrackedFrame, calibration: CalibrationRuntime) -
 def _nearest_seat(seats: list[CalibrationSeat], point: TablePoint) -> tuple[str, float]:
     """Seat whose `player_area` centroid is nearest `point`, and that distance (REQ-27)."""
     seat_id, centroid = min(
-        ((seat.seat_id, _centroid(seat.zones.player_area)) for seat in seats),
+        ((seat.seat_id, polygon_centroid(seat.zones.player_area)) for seat in seats),
         key=lambda candidate: _distance(point, candidate[1]),
     )
     return seat_id, _distance(point, centroid)

@@ -46,6 +46,32 @@ def polygon_signed_area(points: list[TablePoint]) -> float:
     return total / 2.0
 
 
+def polygon_centroid(polygon: TablePolygon) -> TablePoint:
+    """Area-weighted polygon centroid.
+
+    Not the mean of `polygon.points`: a plain vertex average is only the
+    true centroid for a regular polygon, and diverges from it for an
+    irregular or concave one, or one with extra collinear vertices along a
+    straight edge. Used both by `assignment.zone_assignment` (REQ-27's
+    nearest-seat fallback, REQ-28's multi-seat tie-break) and by the debug
+    overlay (REQ-37) as the rubber-band line's seat-side anchor, so both
+    must agree on the exact same point. `TablePolygon`'s own validator
+    already rejects the zero-area case this formula would divide by
+    (REQ-11).
+    """
+    points = polygon.points
+    area = polygon_signed_area(points)
+    cx = 0.0
+    cy = 0.0
+    n = len(points)
+    for i in range(n):
+        a, b = points[i], points[(i + 1) % n]
+        cross = a.x * b.y - b.x * a.y
+        cx += (a.x + b.x) * cross
+        cy += (a.y + b.y) * cross
+    return TablePoint(x=cx / (6 * area), y=cy / (6 * area))
+
+
 def _cross(o: TablePoint, a: TablePoint, b: TablePoint) -> float:
     """Cross product of (a - o) and (b - o); sign gives turn direction at o."""
     return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)

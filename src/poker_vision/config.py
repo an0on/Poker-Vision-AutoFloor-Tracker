@@ -120,6 +120,19 @@ class ExportConfig(StrictModel):
     tournament_director: bool = False
 
 
+class DebugConfig(StrictModel):
+    """MJPEG debug overlay toggle (REQ-37).
+
+    `enabled: false` disables the endpoint entirely -- `debug.build_debug_
+    server()` returns `None` and no `MjpegDebugServer` (hence no FastAPI
+    route, no uvicorn server) is ever constructed, the same way an
+    `ExportConfig` flag set to `False` skips constructing that adapter
+    (REQ-37a).
+    """
+
+    enabled: bool = True
+
+
 class PathsConfig(StrictModel):
     calibration_authoring: Path
     calibration_runtime: Path
@@ -231,6 +244,7 @@ class Config(StrictModel):
     hysteresis: HysteresisConfig = Field(default_factory=HysteresisConfig)
     ports: PortsConfig = Field(default_factory=PortsConfig)
     export: ExportConfig = Field(default_factory=ExportConfig)
+    debug: DebugConfig = Field(default_factory=DebugConfig)
     aruco: ArucoDetectionConfig | None = None
     coco: CocoDetectionConfig | None = None
     perturbation: PerturbationConfig | None = None
