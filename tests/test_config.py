@@ -140,6 +140,17 @@ def test_hysteresis_per_class_override():
     assert config.hysteresis.per_class["chip"].n_off == 2
 
 
+# Codex finding: a typo'd or unsupported per_class key (e.g. "chips") must
+# fail config validation, not silently never match any track's class and
+# fall back to the global thresholds.
+def test_hysteresis_per_class_unknown_key_rejected():
+    payload = _config(
+        hysteresis={"n_on": 3, "n_off": 3, "per_class": {"chips": {"n_on": 5}}}
+    )
+    with pytest.raises(ValidationError):
+        Config.model_validate(payload)
+
+
 def test_load_config_from_json_file(tmp_path):
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps(VALID_CONFIG))

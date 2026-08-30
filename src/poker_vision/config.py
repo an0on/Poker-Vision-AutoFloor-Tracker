@@ -81,7 +81,10 @@ class HysteresisOverride(StrictModel):
 class HysteresisConfig(StrictModel):
     n_on: int = Field(default=3, ge=1)
     n_off: int = Field(default=3, ge=1)
-    per_class: dict[str, HysteresisOverride] = Field(default_factory=dict)
+    # Keyed by DetectionClass so a typo'd or unsupported class (e.g. "chips")
+    # fails config validation instead of silently never matching any track's
+    # class and falling back to the global n_on/n_off (REQ-24).
+    per_class: dict[DetectionClass, HysteresisOverride] = Field(default_factory=dict)
 
 
 class ThresholdsConfig(StrictModel):

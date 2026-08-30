@@ -21,9 +21,10 @@ per track, independently per class:
   seat_vacated").
 
 `n_on`/`n_off` come from `HysteresisConfig`: a global default, overridable
-per class via `HysteresisConfig.per_class` (keyed by `DetectionClass.value`;
-either field may be overridden independently, the other falls back to the
-global default).
+per class via `HysteresisConfig.per_class` (keyed by `DetectionClass`, so
+config loading itself rejects an unsupported or typo'd class rather than
+that override silently never matching anything; either field may be
+overridden independently, the other falls back to the global default).
 
 `n_on`/`n_off` count actual frames, not `update()` calls: `frame_index` is
 the authority. Every `Capture`/`Detector` implementation in this project
@@ -119,7 +120,7 @@ class HysteresisFilter:
         )
 
     def _thresholds(self, object_class: DetectionClass) -> tuple[int, int]:
-        override = self._config.per_class.get(object_class.value)
+        override = self._config.per_class.get(object_class)
         n_on = self._config.n_on if override is None or override.n_on is None else override.n_on
         n_off = (
             self._config.n_off if override is None or override.n_off is None else override.n_off
