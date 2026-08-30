@@ -147,6 +147,14 @@ Acceptance Criteria:
 - [ ] Exception in detection/tracking/assignment/state verwirft den Frame
       ohne partielles State-Update (Test: State-Snapshot vor/nach
       Fehler-Frame identisch, Event-Sequence unverändert).
+- [ ] Coding-Konvention (keine Copy-on-Write-/Transaktions-Maschinerie):
+      jede Stufe der Kernkette berechnet ihr vollständiges Update für den
+      Frame, bevor sie eigenen persistenten Zustand mutiert; nur ein
+      vollständig erfolgreicher Durchlauf committet Mutationen. Betrifft
+      insbesondere Tracking-Hysterese/Track-IDs (REQ-23, REQ-24) und
+      State-Machine-Zustand (REQ-29–REQ-32); bestehende Implementierungen
+      dieser REQs werden im Rahmen von REQ-44 daraufhin geprüft und bei
+      Nichteinhaltung angepasst (kein eigenes REQ).
 - [ ] N konsekutive Kernketten-Fehler (config, Default 30) beenden den Loop
       mit Fehlerstatus; ein Erfolgs-Frame resettet den Zähler (Test mit
       Mock-Detector, der gezielt Fehler wirft).
@@ -156,11 +164,19 @@ Acceptance Criteria:
       image_dir-Capture, jsonl-Export — ohne Kamera, GUI oder Netzwerk.
 - [ ] Bei Live-Quelle (`continuity`) liest ein interner Hintergrund-Thread
       kontinuierlich und schreibt in einen thread-sicheren Single-Slot-Puffer
-      (latest-wins, analog `LatestFrameHub` aus REQ-46, nicht
-      `cv2.CAP_PROP_BUFFERSIZE`); der Loop ruft nicht-blockierend
-      `get_latest()` ab statt direkt `read()` (Test: Verarbeitung langsamer
-      als Frame-Rate der Quelle → Loop erhält stets den aktuellsten Frame,
-      kein Backlog, kein Blockieren des Loops).
+      mit monoton steigendem Versions-/Sequenzzähler (latest-wins, gleiches
+      Pattern wie `LatestFrameHub` aus REQ-46, nicht
+      `cv2.CAP_PROP_BUFFERSIZE`); `get_latest()` liefert jeden Frame genau
+      einmal und blockiert kurz mit Timeout auf einen neuen Frame
+      (`threading.Condition`/`Event`, kein Busy-Spin, kein reines
+      Sleep-Polling) statt direkt `read()` auf der Kamera aufzurufen. Gilt
+      nur für `continuity`; `video_file`/`image_dir` bleiben beim
+      bestehenden synchronen, deterministischen Lesepfad ohne Dropping.
+      Tests: (a) Verarbeitung langsamer als Frame-Rate der Quelle → Loop
+      erhält stets den aktuellsten Frame, kein Backlog, kein Blockieren
+      über den Timeout hinaus; (b) Verarbeitung schneller als Frame-Rate
+      der Quelle → kein Frame wird zweimal verarbeitet (keine doppelten
+      `frame_id`s, keine doppelte Hysterese-Zählung).
 
 ##### REQ-45 — CLI-Einstiegspunkt & Lifecycle
 Der Runner ist über ein CLI startbar, config-gesteuert und fährt auf

@@ -140,6 +140,12 @@ once, with the summary of what was found/fixed.
   - Exception in einer dieser Stufen → gesamten Frame verwerfen, KEIN
     partielles Update. State Machine sieht nur vollständig verarbeitete
     Frames → Event-Sequence-Zähler und Hand-Lifecycle bleiben konsistent.
+  - Voraussetzung dafür (Coding-Konvention, keine Copy-on-Write-/
+    Transaktions-Maschinerie): jede Stufe berechnet ihr vollständiges
+    Update für den Frame, bevor sie eigenen persistenten Zustand mutiert
+    (Tracking-Hysterese/Track-IDs, State-Machine-Zustand); nur ein
+    vollständig erfolgreicher Durchlauf committet Mutationen. Nur so ist
+    „kein partielles Update" oben tatsächlich garantiert.
   - Fehler loggen + Fehlerzähler; nach N konsekutiven Fehlern (config,
     Default 30) Abbruch mit Exit ≠ 0. Einzelner erfolgreicher Frame
     resettet den Zähler.
@@ -155,13 +161,21 @@ once, with the summary of what was found/fixed.
   von der Kamera und schreibt in einen thread-sicheren Single-Slot-Puffer
   (dasselbe latest-wins-Pattern wie `LatestFrameHub` aus REQ-46, nicht
   `cv2.CAP_PROP_BUFFERSIZE` — dessen Verhalten ist backend-abhängig
-  unzuverlässig). Der Loop selbst bleibt single-threaded und synchron: er
-  ruft nicht-blockierend `get_latest()` auf diesem Puffer ab statt `read()`
-  direkt auf der Kamera; das Dropping passiert im Hintergrund-Thread der
-  Capture-Implementierung, nicht im Loop.
-- Dateiquellen: kein Drop, jeder Frame wird verarbeitet (deterministisch,
-  wichtig für Regressionstests). Kein Realtime-Pacing per Default;
-  optionales `--realtime`-Flag als späteres Nice-to-have, nicht Teil der REQs.
+  unzuverlässig). Der Puffer führt einen monoton steigenden Versions-/
+  Sequenzzähler; `get_latest()` liefert jeden Frame genau einmal zurück
+  (kein erneutes Ausliefern desselben Frames, falls der Loop schneller als
+  die Kamera ist — verhindert doppelte `frame_id`s / doppelte
+  Hysterese-Zählung). Der Loop selbst bleibt single-threaded und synchron:
+  er ruft `get_latest()` auf diesem Puffer als kurzen blockierenden Wait
+  mit Timeout ab (`threading.Condition`/`Event`, kein Busy-Spin, kein
+  reines Sleep-Polling) statt `read()` direkt auf der Kamera; das Dropping
+  passiert im Hintergrund-Thread der Capture-Implementierung, nicht im
+  Loop. Gilt ausschließlich für `continuity`.
+- Dateiquellen (`video_file`/`image_dir`): kein Drop, jeder Frame wird
+  verarbeitet (deterministisch, wichtig für Regressionstests); kein
+  Hintergrund-Thread, kein Versionszähler, unverändert synchroner
+  Lesepfad. Kein Realtime-Pacing per Default; optionales `--realtime`-Flag
+  als späteres Nice-to-have, nicht Teil der REQs.
 
 #### capture ↔ debug: FrameHub
 - Neues, thread-sicheres Single-Slot-Objekt `LatestFrameHub`
@@ -169,6 +183,13 @@ once, with the summary of what was found/fixed.
   Konsum-Schnittstelle des Debug-Servers ist):
   - `publish(frame, context_snapshot)` vom Loop (überschreibt, latest-wins).
   - `get_latest()` vom MjpegDebugServer.
+  - Trägt denselben Versions-/Sequenzzähler wie der continuity-interne
+    Puffer (gleiches Pattern). Anders als dort ist Mehrfachauslieferung
+    desselben Frames hier unkritisch (MJPEG-Client rendert denselben
+    Frame erneut, kein Zählungsproblem): `get_latest()` bleibt nicht-
+    blockierend/best-effort (siehe Fehlerpolitik — debug blockiert den
+    Loop nie); die blockierende Wait-mit-Timeout-Semantik aus
+    Backpressure/Pacing gilt nur für den continuity-Konsum durch den Loop.
 - Overlay-Rendering bleibt im Debug-Server und passiert on-demand pro
   verbundenem Client: ohne Client keine Rendering-Kosten im System.
 - Debug-Server wird vom Runner-Lifecycle gestartet/gestoppt (config-gesteuert
