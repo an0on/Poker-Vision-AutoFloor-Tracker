@@ -149,6 +149,25 @@ class ArucoDetectionConfig(StrictModel):
         return value
 
 
+class CocoDetectionConfig(StrictModel):
+    """`mock` detector Modus C config (REQ-20): pretrained COCO model + class mapping.
+
+    A COCO class with no entry here is not one of this project's objects
+    (e.g. COCO's `person`) and is ignored by the detector, the same way
+    `ArucoDetectionConfig.marker_class_map` ignores an unmapped marker ID.
+    """
+
+    model_path: Path = Path("yolov8n.pt")
+    class_map: dict[str, DetectionClass]
+
+    @field_validator("class_map")
+    @classmethod
+    def _check_nonempty(cls, value: dict[str, DetectionClass]) -> dict[str, DetectionClass]:
+        if not value:
+            raise ValueError("coco.class_map must not be empty")
+        return value
+
+
 class Config(StrictModel):
     schema_version: Literal["1.0"]
     device: DeviceType
@@ -158,6 +177,7 @@ class Config(StrictModel):
     hysteresis: HysteresisConfig = Field(default_factory=HysteresisConfig)
     ports: PortsConfig = Field(default_factory=PortsConfig)
     aruco: ArucoDetectionConfig | None = None
+    coco: CocoDetectionConfig | None = None
 
     @field_validator("device")
     @classmethod
