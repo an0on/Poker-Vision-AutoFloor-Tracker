@@ -81,12 +81,15 @@ def test_export_appends_across_multiple_calls_and_is_never_truncated(tmp_path):
     lines = _read_lines(exporter.path)
     assert len(lines) == 2
 
-    # Re-opening the same session_id (e.g. after a restart) appends, it does
-    # not truncate what's already on disk.
-    reopened = JsonlEventExporter(tmp_path, session_id="session_a")
+    # A second exporter instance for the same still-live machine and
+    # session_id (e.g. a second export sink, not a process restart -- state
+    # is in-memory only per the architecture doc, so a real restart starts a
+    # new session/file rather than resuming this machine's sequence) appends
+    # rather than truncating what's already on disk.
+    second_exporter = JsonlEventExporter(tmp_path, session_id="session_a")
     third = machine.update(_frame(_chip(2, "seat_1"), frame_index=2))
-    reopened.export(third)
-    reopened.close()
+    second_exporter.export(third)
+    second_exporter.close()
 
     assert _read_lines(exporter.path) == [*lines, third[0].model_dump_json()]
 

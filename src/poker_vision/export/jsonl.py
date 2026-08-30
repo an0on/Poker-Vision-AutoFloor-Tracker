@@ -13,6 +13,14 @@ most the write in flight, not prior lines. Preserving call order is what
 keeps the file's `sequence` values gapless and ascending (AC-21) --
 `PipelineStateMachine` (REQ-33) is the one that guarantees gaplessness in
 the first place, this adapter just never reorders or drops what it's given.
+
+That guarantee assumes one file maps to one `PipelineStateMachine`'s
+lifetime: the architecture keeps all pipeline state in-memory only (no
+persisted/resumed state machine), so a process restart is expected to start
+a new session (new `session_id`/file), not reopen an old one's sequence
+mid-stream. Reopening an existing `session_id` against a *fresh* state
+machine is out of scope here -- it would need sequence-recovery logic this
+adapter deliberately doesn't have.
 """
 
 from __future__ import annotations
