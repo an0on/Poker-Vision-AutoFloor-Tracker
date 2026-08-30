@@ -146,20 +146,34 @@
     statusEl.textContent = label;
   }
 
+  // Seat IDs and other string fields come from the calibration file and the
+  // WebSocket wire payload, not from this page's own code, so they're
+  // untrusted as far as this markup is concerned (e.g. a seat_id of
+  // "<img src=x onerror=...>" is a valid, non-empty CalibrationSeat.seat_id).
+  // Every value interpolated into innerHTML below goes through this first.
+  function escapeHtml(value) {
+    return String(value)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
+  }
+
   function renderSnapshot(snapshot) {
     const seatRows = snapshot.seats
       .map((seat) => {
         const cls = seat.occupied ? "occupied" : "vacant";
-        return `<tr><td>${seat.seat}</td><td class="${cls}">${seat.occupied ? "occupied" : "vacant"}</td></tr>`;
+        return `<tr><td>${escapeHtml(seat.seat)}</td><td class="${cls}">${seat.occupied ? "occupied" : "vacant"}</td></tr>`;
       })
       .join("");
     snapshotEl.innerHTML = `
       <table>
-        <tr><td class="key">frame_index</td><td>${snapshot.frame_index}</td></tr>
-        <tr><td class="key">dealer_seat</td><td>${snapshot.dealer_seat ?? "-"}</td></tr>
-        <tr><td class="key">hand_id</td><td>${snapshot.hand_id ?? "-"}</td></tr>
-        <tr><td class="key">street</td><td>${snapshot.street ?? "-"}</td></tr>
-        <tr><td class="key">hand_active</td><td>${snapshot.hand_active}</td></tr>
+        <tr><td class="key">frame_index</td><td>${escapeHtml(snapshot.frame_index)}</td></tr>
+        <tr><td class="key">dealer_seat</td><td>${escapeHtml(snapshot.dealer_seat ?? "-")}</td></tr>
+        <tr><td class="key">hand_id</td><td>${escapeHtml(snapshot.hand_id ?? "-")}</td></tr>
+        <tr><td class="key">street</td><td>${escapeHtml(snapshot.street ?? "-")}</td></tr>
+        <tr><td class="key">hand_active</td><td>${escapeHtml(snapshot.hand_active)}</td></tr>
       </table>
       <table id="seat-table">
         <tr><th>seat</th><th>occupancy</th></tr>
@@ -171,9 +185,9 @@
   function describeEvent(event) {
     const { schema_version, event_type, sequence, timestamp, frame_index, ...rest } = event;
     const fields = Object.entries(rest)
-      .map(([key, value]) => `${key}=${value}`)
+      .map(([key, value]) => `${escapeHtml(key)}=${escapeHtml(value)}`)
       .join(" ");
-    return `<span class="seq">#${sequence}</span> <span class="type">${event_type}</span> frame=${frame_index} ${fields}`;
+    return `<span class="seq">#${escapeHtml(sequence)}</span> <span class="type">${escapeHtml(event_type)}</span> frame=${escapeHtml(frame_index)} ${fields}`;
   }
 
   function addEvent(event) {

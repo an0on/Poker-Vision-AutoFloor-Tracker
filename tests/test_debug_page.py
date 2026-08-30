@@ -158,3 +158,26 @@ def test_debug_page_has_an_events_container_and_a_snapshot_panel():
 
     assert 'id="events"' in body
     assert 'id="snapshot"' in body
+
+
+def test_debug_page_escapes_wire_values_before_inserting_them_as_html():
+    # seat_id is only constrained to be non-empty (CalibrationSeat.seat_id),
+    # so a seat/event value can legally contain HTML metacharacters; the
+    # page must escape it rather than pass it through innerHTML verbatim.
+    body = TestClient(_server().app).get("/").text
+
+    assert "function escapeHtml(value)" in body
+    # Every value taken from the wire payload and interpolated into a
+    # template string must be wrapped in escapeHtml(...), not inserted raw.
+    for raw_interpolation in (
+        "${seat.seat}",
+        "${snapshot.dealer_seat",
+        "${snapshot.street",
+        "${event_type}",
+        "${sequence}",
+        "${key}=${value}",
+    ):
+        assert raw_interpolation not in body
+    assert "escapeHtml(seat.seat)" in body
+    assert "escapeHtml(event_type)" in body
+    assert "escapeHtml(key)" in body and "escapeHtml(value)" in body
