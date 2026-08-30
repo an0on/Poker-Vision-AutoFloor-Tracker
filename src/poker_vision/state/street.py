@@ -28,8 +28,8 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
-from poker_vision.assignment.models import FrameAssignments, ZoneKind
-from poker_vision.detection.models import DetectionClass
+from poker_vision.assignment.models import FrameAssignments
+from poker_vision.state.board import count_board_cards
 from poker_vision.state.events import EVENT_SCHEMA_VERSION, Street, StreetChangedEvent
 
 logger = logging.getLogger(__name__)
@@ -62,17 +62,20 @@ class StreetTracker:
 
     `hand_id` is REQ-33's mandatory field on `StreetChangedEvent`, but
     REQ-31 has no concept of a "hand" of its own -- that is REQ-32's
-    `hand_started`/`hand_ended` tracker, defined purely by the board going
-    empty <-> non-empty (AGENTS.md), independent of whether a valid street
-    was ever reached in between. Until that tracker exists and a composing
-    state machine can hand this tracker the real, shared `hand_id`, this
-    tracker maintains its own private counter that bumps on every
-    non-empty -> empty transition of the board -- the same signal REQ-32
-    will use for `hand_ended` -- so it advances even for a "hand" that only
-    ever showed 1, 2, or >5 stable cards and never reached a valid street.
-    That makes the numbering here consistent with what REQ-32 will produce
-    for a single-table replay, but it is not the same counter object;
-    reconciling the two remains later work.
+    `HandTracker` (`hand.py`), defined purely by the board going empty <->
+    non-empty (AGENTS.md), independent of whether a valid street was ever
+    reached in between. Until a composing state machine can hand this
+    tracker the real, shared `hand_id` (REQ-33), this tracker maintains its
+    own private counter that bumps on every non-empty -> empty transition
+    of the board -- the same transition `HandTracker` reacts to, via the
+    shared `count_board_cards` (`board.py`) -- so it advances even for a
+    "hand" that only ever showed 1, 2, or >5 stable cards and never reached
+    a valid street. Because both trackers apply that identical rule to the
+    same input stream, their `hand_id` counters stay numerically in sync
+    for a single-table replay without either referencing the other's
+    state; they are still two separate counter objects, not one shared
+    object -- unifying them behind one canonical source remains REQ-33's
+    job.
     """
 
     def __init__(self) -> None:
@@ -82,12 +85,7 @@ class StreetTracker:
         self._sequence = 0
 
     def update(self, frame_assignments: FrameAssignments) -> list[StreetChangedEvent]:
-        count = sum(
-            1
-            for assignment in frame_assignments.assignments
-            if assignment.zone is ZoneKind.BOARD_ZONE
-            and assignment.object_class is DetectionClass.CARD
-        )
+        count = count_board_cards(frame_assignments)
 
         if count > 0 and not self._board_active:
             self._board_active = True
