@@ -25,6 +25,7 @@ from poker_vision.capture.frame import Frame
 from poker_vision.detection.geometry import (
     PixelBox,
     apply_homography_to_point,
+    box_center,
     transform_box_to_table,
 )
 from poker_vision.detection.models import (
@@ -39,10 +40,12 @@ from poker_vision.detection.models import (
 class RawDetection:
     """One detection in pixel space, before the detection-stage transform.
 
-    `center` is required and already computed by the concrete detector (via
-    `geometry.box_center` for box-based sources, or however a source without
-    a box, e.g. an ArUco marker centroid - REQ-19, derives its own centre).
-    `box` is optional, matching the optional box on the final `Detection`.
+    `center` is only authoritative when `box` is `None` (e.g. an ArUco
+    marker centroid - REQ-19, which has no box at all). Whenever `box` is
+    present, `Detector.detect` recomputes the centre itself via
+    `geometry.box_center` and ignores this field: a subclass cannot supply
+    a centre that disagrees with Phase 0's verified bounding-box-centre
+    method for any detection that has a box (REQ-17).
     """
 
     object_class: DetectionClass
@@ -71,7 +74,15 @@ class Detector(ABC):
             Detection(
                 object_class=raw.object_class,
                 confidence=raw.confidence,
-                center=apply_homography_to_point(raw.center, homography, camera, distortion),
+                center=apply_homography_to_point(
+                    # A box's centre is always Phase 0's method (REQ-17), never
+                    # whatever the subclass put in raw.center: only a boxless
+                    # source's own centre is trusted as-is.
+                    box_center(raw.box) if raw.box is not None else raw.center,
+                    homography,
+                    camera,
+                    distortion,
+                ),
                 box=transform_box_to_table(raw.box, homography, camera, distortion)
                 if raw.box is not None
                 else None,

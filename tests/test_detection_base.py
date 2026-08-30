@@ -281,6 +281,9 @@ def test_detect_transforms_center_and_box_into_table_coordinates():
     raw = RawDetection(
         object_class=DetectionClass.CHIP,
         confidence=0.9,
+        # Deliberately not box_center(box) = (5, 5): a box's centre must
+        # always come from Phase 0's method, so detect() must ignore this
+        # value entirely (see test below for the dedicated check).
         center=PixelPoint(x=10.0, y=10.0),
         box=(0.0, 0.0, 10.0, 10.0),
     )
@@ -294,16 +297,46 @@ def test_detect_transforms_center_and_box_into_table_coordinates():
     detection = result.detections[0]
     assert detection.object_class is DetectionClass.CHIP
     assert detection.confidence == 0.9
-    # AC-10: the output centre is the *transformed* table point, never the
-    # raw pixel value the stub handed in.
-    assert detection.center.x == pytest.approx(30.0)
-    assert detection.center.y == pytest.approx(50.0)
-    assert (detection.center.x, detection.center.y) != (raw.center.x, raw.center.y)
+    # box_center((0, 0, 10, 10)) = (5, 5) -> (2*5+10, 3*5+20) = (20, 35),
+    # not the (30, 50) raw.center alone would have produced.
+    assert detection.center.x == pytest.approx(20.0)
+    assert detection.center.y == pytest.approx(35.0)
     assert detection.box is not None
     assert detection.box.min.x == pytest.approx(10.0)
     assert detection.box.min.y == pytest.approx(20.0)
     assert detection.box.max.x == pytest.approx(30.0)
     assert detection.box.max.y == pytest.approx(50.0)
+
+
+def test_detect_ignores_raw_center_when_box_is_present():
+    # Codex finding: detect() must not trust a subclass-supplied centre that
+    # disagrees with Phase 0's box_center method whenever a box exists -
+    # every box-based detector has to agree on the same centre method
+    # (REQ-17), not just by convention.
+    calibration = _runtime(SCALE_TRANSLATE_FORWARD, SCALE_TRANSLATE_INVERSE)
+    box = (0.0, 0.0, 10.0, 10.0)  # box_center -> (5, 5)
+    wrong_center = RawDetection(
+        object_class=DetectionClass.CHIP,
+        confidence=0.9,
+        center=PixelPoint(x=9999.0, y=9999.0),  # nonsense, must be ignored
+        box=box,
+    )
+    correct_center = RawDetection(
+        object_class=DetectionClass.CHIP,
+        confidence=0.9,
+        center=PixelPoint(x=5.0, y=5.0),  # == box_center(box)
+        box=box,
+    )
+
+    detector = _StubDetector(calibration, [wrong_center])
+    result_with_wrong_center = detector.detect(_frame())
+    detector = _StubDetector(calibration, [correct_center])
+    result_with_correct_center = detector.detect(_frame())
+
+    detection_a = result_with_wrong_center.detections[0]
+    detection_b = result_with_correct_center.detections[0]
+    assert detection_a.center.x == pytest.approx(detection_b.center.x)
+    assert detection_a.center.y == pytest.approx(detection_b.center.y)
 
 
 def test_detect_without_raw_box_leaves_detection_box_none():
