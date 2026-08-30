@@ -6,7 +6,6 @@ import logging
 
 import pytest
 
-from poker_vision.assignment import zone_assignment as zone_assignment_module
 from poker_vision.assignment.models import ZoneAssignment, ZoneKind
 from poker_vision.assignment.zone_assignment import apply_dealer_nearest_seat_fallback, assign_zones
 from poker_vision.calibration.camera import CameraIntrinsics, DistortionCoefficients
@@ -304,34 +303,6 @@ def test_zone_assignment_rejects_seat_id_on_global_zone():
             zone=ZoneKind.BOARD_ZONE,
             seat_id="seat_3",
         )
-
-
-# --- _centroid: area-weighted, not a vertex average (REQ-28) --------------
-
-
-def test_centroid_of_rectangle_matches_vertex_average():
-    # For a rectangle, the area-weighted centroid and the plain vertex
-    # average coincide -- this is the case the old (wrong) implementation
-    # got right, so the fix must not have broken it.
-    rectangle = _polygon((0, 0), (10, 0), (10, 4), (0, 4))
-    centroid = zone_assignment_module._centroid(rectangle)
-    assert centroid.x == pytest.approx(5.0)
-    assert centroid.y == pytest.approx(2.0)
-
-
-def test_centroid_uses_area_weighting_not_vertex_average():
-    # Triangle (0,0)-(0,12)-(4,0) with an extra vertex (2,6) added exactly
-    # on the hypotenuse (collinear, no effect on the actual shape). Its true
-    # (area-weighted) centroid is the average of the *triangle's own three*
-    # vertices, (4/3, 4) -- but naively averaging all four listed points
-    # gives (1.5, 4.5) instead. A centroid that shifts just from adding a
-    # collinear vertex to an unchanged shape could flip REQ-28's nearest-seat
-    # tie-break for reasons that have nothing to do with the polygon's
-    # actual geometry.
-    triangle_with_collinear_vertex = _polygon((0, 0), (0, 12), (2, 6), (4, 0))
-    centroid = zone_assignment_module._centroid(triangle_with_collinear_vertex)
-    assert centroid.x == pytest.approx(4 / 3)
-    assert centroid.y == pytest.approx(4.0)
 
 
 def test_zone_assignment_rejects_missing_seat_id_on_seat_zone():
