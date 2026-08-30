@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from poker_vision.assignment.models import FrameAssignments, ZoneAssignment, ZoneKind
 from poker_vision.detection.models import DetectionClass
 from poker_vision.export.jsonl import JsonlEventExporter
@@ -118,6 +120,15 @@ def test_default_session_id_is_generated_when_omitted(tmp_path):
     assert exporter.path.exists()
 
     exporter.close()
+
+
+@pytest.mark.parametrize("session_id", ["../escaped", "sub/session", "/absolute", ".", "..", ""])
+def test_rejects_session_id_that_would_escape_export_dir(tmp_path, session_id):
+    with pytest.raises(ValueError, match="session_id"):
+        JsonlEventExporter(tmp_path, session_id=session_id)
+
+    # Nothing outside export_dir was created by the rejected attempt.
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_export_dir_is_created_if_missing(tmp_path):

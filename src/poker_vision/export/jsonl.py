@@ -31,12 +31,25 @@ def _default_session_id() -> str:
     return datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
 
 
+def _validate_session_id(session_id: str) -> str:
+    # An explicit session_id may eventually come from runtime config
+    # (REQ-37a); rejecting anything but a plain filename component keeps it
+    # from ever escaping export_dir via "../" or an absolute path.
+    if not session_id or session_id in {".", ".."} or Path(session_id).name != session_id:
+        raise ValueError(
+            f"invalid session_id: {session_id!r} (must be a plain filename, no path separators)"
+        )
+    return session_id
+
+
 class JsonlEventExporter:
     """Writes `Event`s to `<export_dir>/<session_id>.jsonl`, one per line."""
 
     def __init__(self, export_dir: Path, session_id: str | None = None) -> None:
         export_dir.mkdir(parents=True, exist_ok=True)
-        self.session_id = session_id or _default_session_id()
+        self.session_id = (
+            _validate_session_id(session_id) if session_id is not None else _default_session_id()
+        )
         self.path = export_dir / f"{self.session_id}.jsonl"
         self._file = self.path.open("a", encoding="utf-8")
 
