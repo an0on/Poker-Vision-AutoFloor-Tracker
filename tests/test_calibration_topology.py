@@ -1,3 +1,6 @@
+import pytest
+
+from poker_vision.calibration import topology as topology_module
 from poker_vision.calibration.geometry import TablePolygon
 from poker_vision.calibration.topology import polygon_contains, polygons_overlap
 
@@ -163,3 +166,42 @@ def test_overlap_crossing_without_contained_vertices():
     a = _polygon((0, 4), (10, 4), (10, 6), (0, 6))
     b = _polygon((4, 0), (6, 0), (6, 10), (4, 10))
     assert polygons_overlap(a, b) is True
+
+
+# --- _triangulate failure handling --------------------------------------------
+
+
+def test_triangulate_raises_instead_of_returning_incomplete_result(monkeypatch):
+    # If ear-clipping ever fails to find a clippable ear (float noise on a
+    # pathological input, or a latent bug in _is_ear), the old behavior was
+    # to silently return whatever triangles had been found so far — up to
+    # and including an empty list. Force that path and confirm it now
+    # raises instead of returning a partial/empty triangulation.
+    monkeypatch.setattr(topology_module, "_is_ear", lambda polygon, index, orientation: False)
+    with pytest.raises(ValueError, match="triangulation failed"):
+        topology_module._triangulate(SQUARE_0_100.points)
+
+
+def test_polygon_contains_propagates_triangulation_failure(monkeypatch):
+    # Before the fix: an empty inner triangulation meant the "does every
+    # inner triangle fit inside outer" loop never ran, so polygon_contains
+    # returned True unconditionally — even for an inner polygon nowhere
+    # near outer. Force _triangulate's real ear-search into its failure
+    # branch (rather than replacing _triangulate itself, which would just
+    # bypass the fix) and confirm the failure propagates instead of
+    # silently passing.
+    monkeypatch.setattr(topology_module, "_is_ear", lambda polygon, index, orientation: False)
+    far_away = _polygon((200, 200), (210, 200), (210, 210), (200, 210))
+    with pytest.raises(ValueError, match="triangulation failed"):
+        polygon_contains(SQUARE_0_100, far_away)
+
+
+def test_polygons_overlap_propagates_triangulation_failure(monkeypatch):
+    # Before the fix: an empty triangulation on either side meant the "do
+    # any triangle pair overlap" check ran over zero pairs, so
+    # polygons_overlap returned False unconditionally — even for two
+    # identical polygons. Confirm the failure propagates instead of
+    # silently under-reporting.
+    monkeypatch.setattr(topology_module, "_is_ear", lambda polygon, index, orientation: False)
+    with pytest.raises(ValueError, match="triangulation failed"):
+        polygons_overlap(SQUARE_0_100, SQUARE_0_100)

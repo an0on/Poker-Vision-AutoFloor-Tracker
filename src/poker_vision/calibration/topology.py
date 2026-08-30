@@ -102,7 +102,13 @@ def _triangulate(points: list[TablePoint]) -> list[tuple[TablePoint, TablePoint,
 
     Every simple polygon with n >= 4 vertices has at least one ear (a
     classical result), so repeatedly clipping one always terminates in
-    exactly n - 2 triangles that exactly tile the polygon.
+    exactly n - 2 triangles that exactly tile the polygon. Raises rather
+    than returning a partial (or, worst case, empty) result if that
+    theorem ever fails to hold in practice (e.g. floating-point noise on
+    a pathological input): `polygon_contains`/`polygons_overlap` treat "no
+    triangles to check" as vacuously true/false respectively, so silently
+    returning less than a full triangulation would let a genuinely invalid
+    zone topology pass REQ-11's supposedly hard validation.
     """
     remaining = list(points)
     orientation = _sign(polygon_signed_area(points))
@@ -118,13 +124,11 @@ def _triangulate(points: list[TablePoint]) -> list[tuple[TablePoint, TablePoint,
                 del remaining[i]
                 break
         else:
-            # A genuinely simple polygon always has a clippable ear; bail
-            # out rather than loop forever if float noise ever prevents
-            # finding one (leaves this triangulation incomplete, which
-            # only makes `polygons_overlap` under-detect, never over-).
-            break
-    if len(remaining) == 3:
-        triangles.append((remaining[0], remaining[1], remaining[2]))
+            raise ValueError(
+                "polygon triangulation failed: no clippable ear found for a "
+                "polygon that should be simple"
+            )
+    triangles.append((remaining[0], remaining[1], remaining[2]))
     return triangles
 
 
