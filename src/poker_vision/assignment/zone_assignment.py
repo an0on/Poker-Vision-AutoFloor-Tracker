@@ -1,12 +1,20 @@
-"""Point-in-polygon zone assignment for stable tracks (REQ-26, REQ-28).
+"""Point-in-polygon zone assignment for stable tracks (REQ-26, REQ-27, REQ-28).
 
-`assign_zones` is the one entry point: it takes a `HysteresisFilter.
+`assign_zones` is the main entry point: it takes a `HysteresisFilter.
 update()` result (REQ-25's "nur bestätigte Tracks") and the calibration's
 zone polygons, and maps each track to at most one zone via
 `calibration.topology.point_in_polygon` — no sampling, no distance
-thresholds, purely "is this point inside that polygon" (nearest-seat
-fallback for an unmatched `dealer_button` is REQ-27, a separate, later
-stage on top of this one's output).
+thresholds, purely "is this point inside that polygon".
+
+`apply_dealer_nearest_seat_fallback` is a separate, later stage that runs
+on top of `assign_zones`'s output (REQ-27): a `dealer_button` REQ-26 left
+seat-less — either absent from the result entirely, or present with
+`zone=DEALER_AREA, seat_id=None` — gets the seat whose `player_area`
+centroid is nearest its position, in table units, provided that distance
+is within a configured threshold; otherwise it stays exactly as REQ-26
+left it. This is the only place in `assignment/` that uses a distance
+threshold rather than pure polygon containment, and the only place a
+track can be assigned a seat its position doesn't actually lie inside.
 
 Per REQ-26, which zones a class is tested against differs:
 
@@ -22,11 +30,11 @@ Per REQ-26, which zones a class is tested against differs:
 - `dealer_button`: a seat's `player_area` first (so a button sitting in
   front of a seat resolves straight to that seat), falling back to the
   global `dealer_area` when no seat's `player_area` contains it. A
-  `dealer_area` match still carries no `seat_id` — REQ-26 only requires
-  testing the button against `dealer_area` in its own right, not resolving
-  it to a seat; turning a seat-less `dealer_area` hit into a seat is
-  REQ-27's nearest-seat fallback, a separate, later stage on top of this
-  one's output, not implemented yet.
+  `dealer_area` match still carries no `seat_id` at this stage — REQ-26
+  only requires testing the button against `dealer_area` in its own
+  right, not resolving it to a seat; that is
+  `apply_dealer_nearest_seat_fallback`'s job (REQ-27), a separate, later
+  stage on top of this function's output.
 
 REQ-28 ("höchstens einer Zone") only has teeth at the per-class-of-zone
 level above: a point can be inside more than one seat's zone only if seats'
@@ -176,7 +184,8 @@ def _assign_dealer_button(
         )
     # No seat's player_area contains the button: report a dealer_area hit
     # in its own right (REQ-26), still with no seat_id -- resolving this
-    # to a seat is REQ-27's job, not this stage's.
+    # to a seat is apply_dealer_nearest_seat_fallback's job (REQ-27), not
+    # this stage's.
     if not point_in_polygon(calibration.zones.dealer_area, track.center):
         return None
     return ZoneAssignment(
@@ -202,9 +211,9 @@ def assign_zones(tracked_frame: TrackedFrame, calibration: CalibrationRuntime) -
     absent from the result — there is no "unassigned" entry to carry, since
     absence from `assignments` already communicates that to `state`
     (REQ-29 ff.). A `dealer_button` assigned `zone=DEALER_AREA` is present
-    in the result but still has no `seat_id`; REQ-27's nearest-seat
-    fallback (not implemented here) is what turns either case — missing
-    entirely, or a seat-less `dealer_area` hit — into a seat.
+    in the result but still has no `seat_id`; `apply_dealer_nearest_seat_
+    fallback` is what turns either case — missing entirely, or a seat-less
+    `dealer_area` hit — into a seat (REQ-27), on top of this result.
     """
     assignments = [
         assignment
@@ -214,5 +223,76 @@ def assign_zones(tracked_frame: TrackedFrame, calibration: CalibrationRuntime) -
     return FrameAssignments(
         schema_version=ASSIGNMENT_SCHEMA_VERSION,
         frame_index=tracked_frame.frame_index,
+        assignments=assignments,
+    )
+
+
+def _nearest_seat(seats: list[CalibrationSeat], point: TablePoint) -> tuple[str, float]:
+    """Seat whose `player_area` centroid is nearest `point`, and that distance (REQ-27)."""
+    seat_id, centroid = min(
+        ((seat.seat_id, _centroid(seat.zones.player_area)) for seat in seats),
+        key=lambda candidate: _distance(point, candidate[1]),
+    )
+    return seat_id, _distance(point, centroid)
+
+
+def _dealer_button_needs_fallback(assignment: ZoneAssignment) -> bool:
+    return assignment.zone is ZoneKind.DEALER_AREA and assignment.seat_id is None
+
+
+def apply_dealer_nearest_seat_fallback(
+    tracked_frame: TrackedFrame,
+    frame_assignments: FrameAssignments,
+    calibration: CalibrationRuntime,
+    max_distance: float,
+) -> FrameAssignments:
+    """Nearest-seat fallback for a seat-less `dealer_button` (REQ-27, AC-16).
+
+    Runs after `assign_zones` (REQ-26). A `dealer_button` track that REQ-26
+    left without a `seat_id` -- either absent from `frame_assignments`
+    entirely, or present as `zone=DEALER_AREA, seat_id=None` -- gets the
+    seat whose `player_area` centroid is nearest its position, in table
+    units, provided that distance is at most `max_distance` (the config
+    threshold). Beyond the threshold the track is left exactly as REQ-26
+    produced it: still absent, or still a seat-less `dealer_area` entry --
+    "unassigned", never a `dealer_moved` event (`state`, REQ-30). A track
+    resolved by REQ-26 already (any other zone, or `dealer_area` with a
+    seat) is passed through unchanged.
+    """
+    assigned_by_track = {a.track_id: a for a in frame_assignments.assignments}
+    dealer_tracks = {
+        track.track_id: track
+        for track in tracked_frame.tracks
+        if track.object_class is DetectionClass.DEALER_BUTTON
+    }
+
+    def _resolved(track_id: int) -> ZoneAssignment | None:
+        track = dealer_tracks[track_id]
+        seat_id, distance = _nearest_seat(calibration.seats, track.center)
+        if distance > max_distance:
+            return None
+        return ZoneAssignment(
+            schema_version=ASSIGNMENT_SCHEMA_VERSION,
+            track_id=track_id,
+            object_class=DetectionClass.DEALER_BUTTON,
+            zone=ZoneKind.DEALER_AREA,
+            seat_id=seat_id,
+        )
+
+    assignments = [
+        (_resolved(assignment.track_id) or assignment)
+        if _dealer_button_needs_fallback(assignment)
+        else assignment
+        for assignment in frame_assignments.assignments
+    ]
+    assignments.extend(
+        resolved
+        for track_id in dealer_tracks
+        if track_id not in assigned_by_track and (resolved := _resolved(track_id)) is not None
+    )
+
+    return FrameAssignments(
+        schema_version=ASSIGNMENT_SCHEMA_VERSION,
+        frame_index=frame_assignments.frame_index,
         assignments=assignments,
     )

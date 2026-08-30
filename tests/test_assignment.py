@@ -8,7 +8,7 @@ import pytest
 
 from poker_vision.assignment import zone_assignment as zone_assignment_module
 from poker_vision.assignment.models import ZoneAssignment, ZoneKind
-from poker_vision.assignment.zone_assignment import assign_zones
+from poker_vision.assignment.zone_assignment import apply_dealer_nearest_seat_fallback, assign_zones
 from poker_vision.calibration.camera import CameraIntrinsics, DistortionCoefficients
 from poker_vision.calibration.geometry import TableDimensions, TablePoint, TablePolygon, TableUnit
 from poker_vision.calibration.homography import HomographyMatrix
@@ -150,6 +150,103 @@ def test_dealer_button_in_dealer_area_outside_any_seat_assigns_dealer_area():
 def test_dealer_button_outside_every_zone_is_unassigned():
     result = assign_zones(_frame(_track(1, DetectionClass.DEALER_BUTTON, 150, 150)), CALIBRATION)
     assert result.assignments == []
+
+
+# --- dealer_button nearest-seat fallback (REQ-27, AC-16) -------------------
+
+# (130, 50) is in neither seat's player_area nor dealer_area (so REQ-26
+# alone leaves the track absent from `assignments`). seat_3's player_area
+# centroid is (50, 50) (distance 80), seat_1's is (250, 50) (distance 120)
+# -- seat_3 must win as the smaller euclidean distance (AC-16).
+_OUTSIDE_ALL_ZONES_NEAR_SEAT_3 = (130, 50)
+_DISTANCE_TO_SEAT_3 = 80.0
+_DISTANCE_TO_SEAT_1 = 120.0
+
+
+def test_fallback_assigns_nearest_seat_when_button_matched_no_zone_and_under_threshold():
+    frame = _frame(_track(1, DetectionClass.DEALER_BUTTON, *_OUTSIDE_ALL_ZONES_NEAR_SEAT_3))
+    assignments = assign_zones(frame, CALIBRATION)
+    assert assignments.assignments == []  # REQ-26 alone: unassigned
+
+    result = apply_dealer_nearest_seat_fallback(
+        frame, assignments, CALIBRATION, max_distance=_DISTANCE_TO_SEAT_3 + 1
+    )
+    assignment = _only(result)
+    assert assignment.zone == ZoneKind.DEALER_AREA
+    assert assignment.seat_id == "seat_3"
+
+
+def test_fallback_leaves_button_unassigned_when_matched_no_zone_and_over_threshold():
+    frame = _frame(_track(1, DetectionClass.DEALER_BUTTON, *_OUTSIDE_ALL_ZONES_NEAR_SEAT_3))
+    assignments = assign_zones(frame, CALIBRATION)
+
+    result = apply_dealer_nearest_seat_fallback(
+        frame, assignments, CALIBRATION, max_distance=_DISTANCE_TO_SEAT_3 - 1
+    )
+    assert result.assignments == []
+
+
+def test_fallback_picks_seat_with_smaller_euclidean_distance():
+    # AC-16's "Testbild mit zwei Kandidaten-Seats" -- both seats are within
+    # threshold, so this isolates the tie-break: the nearer one must win.
+    frame = _frame(_track(1, DetectionClass.DEALER_BUTTON, *_OUTSIDE_ALL_ZONES_NEAR_SEAT_3))
+    assignments = assign_zones(frame, CALIBRATION)
+
+    result = apply_dealer_nearest_seat_fallback(
+        frame, assignments, CALIBRATION, max_distance=_DISTANCE_TO_SEAT_1 + 1
+    )
+    assignment = _only(result)
+    assert assignment.seat_id == "seat_3"
+
+
+def test_fallback_assigns_nearest_seat_to_seatless_dealer_area_hit_when_under_threshold():
+    # (720, 720) is inside dealer_area but no seat's player_area (REQ-26's
+    # own test above) -- distance to seat_1's centroid (250, 50) is ~818.24.
+    frame = _frame(_track(1, DetectionClass.DEALER_BUTTON, 720, 720))
+    assignments = assign_zones(frame, CALIBRATION)
+    original = _only(assignments)
+    assert original.zone == ZoneKind.DEALER_AREA
+    assert original.seat_id is None
+
+    result = apply_dealer_nearest_seat_fallback(frame, assignments, CALIBRATION, max_distance=850.0)
+    assignment = _only(result)
+    assert assignment.zone == ZoneKind.DEALER_AREA
+    assert assignment.seat_id == "seat_1"
+
+
+def test_fallback_leaves_seatless_dealer_area_hit_unchanged_when_over_threshold():
+    frame = _frame(_track(1, DetectionClass.DEALER_BUTTON, 720, 720))
+    assignments = assign_zones(frame, CALIBRATION)
+
+    result = apply_dealer_nearest_seat_fallback(frame, assignments, CALIBRATION, max_distance=100.0)
+    assignment = _only(result)
+    assert assignment.zone == ZoneKind.DEALER_AREA
+    assert assignment.seat_id is None
+
+
+def test_fallback_passes_through_dealer_button_already_assigned_a_seat():
+    frame = _frame(_track(1, DetectionClass.DEALER_BUTTON, 70, 70))
+    assignments = assign_zones(frame, CALIBRATION)
+    original = _only(assignments)
+    assert original.zone == ZoneKind.PLAYER_AREA
+    assert original.seat_id == "seat_3"
+
+    result = apply_dealer_nearest_seat_fallback(frame, assignments, CALIBRATION, max_distance=0.001)
+    assert result.assignments == [original]
+
+
+def test_fallback_ignores_non_dealer_button_tracks():
+    frame = _frame(
+        _track(1, DetectionClass.CHIP, 150, 150),  # unassigned by REQ-26, not a dealer_button
+        _track(2, DetectionClass.DEALER_BUTTON, 70, 70),
+    )
+    assignments = assign_zones(frame, CALIBRATION)
+    assert len(assignments.assignments) == 1  # only track 2
+
+    result = apply_dealer_nearest_seat_fallback(
+        frame, assignments, CALIBRATION, max_distance=1000.0
+    )
+    assert {a.track_id for a in result.assignments} == {2}
 
 
 # --- multiple tracks per frame ---------------------------------------------
