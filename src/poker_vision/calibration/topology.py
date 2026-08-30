@@ -60,9 +60,7 @@ def _on_segment(p: TablePoint, a: TablePoint, b: TablePoint) -> bool:
     )
 
 
-def _triangle_strictly_contains(
-    a: TablePoint, b: TablePoint, c: TablePoint, p: TablePoint
-) -> bool:
+def _triangle_strictly_contains(a: TablePoint, b: TablePoint, c: TablePoint, p: TablePoint) -> bool:
     """True if p is strictly inside triangle a-b-c (works for either winding)."""
     d1 = _sign(_cross(a, b, p))
     d2 = _sign(_cross(b, c, p))
@@ -193,9 +191,7 @@ def _line_intersection(
     return TablePoint(x=x1 + t * (x2 - x1), y=y1 + t * (y2 - y1))
 
 
-def _clip_convex_by_convex(
-    subject: list[TablePoint], clip: list[TablePoint]
-) -> list[TablePoint]:
+def _clip_convex_by_convex(subject: list[TablePoint], clip: list[TablePoint]) -> list[TablePoint]:
     """Sutherland-Hodgman: the exact intersection of `subject` with convex `clip`.
 
     Correct regardless of `subject`'s own winding or convexity (each of
@@ -254,6 +250,23 @@ def polygons_overlap(a: TablePolygon, b: TablePolygon) -> bool:
     """
     triangles_a = _triangulate(a.points)
     triangles_b = _triangulate(b.points)
-    return any(
-        _triangles_share_positive_area(ta, tb) for ta in triangles_a for tb in triangles_b
-    )
+    return any(_triangles_share_positive_area(ta, tb) for ta in triangles_a for tb in triangles_b)
+
+
+def point_in_polygon(polygon: TablePolygon, point: TablePoint) -> bool:
+    """True if `point` lies inside `polygon`, including its boundary (REQ-26).
+
+    Built on the same triangulation as `polygon_contains`/`polygons_overlap`
+    rather than a ray-casting/winding test: `polygon`'s triangles exactly
+    tile it (including its boundary, since every edge of `polygon` is also
+    an edge of some triangle), so `point` is in `polygon` iff it lies
+    strictly inside some triangle or on one of their edges — no separate
+    boundary-case handling needed, and no accuracy loss for concave zones.
+    """
+    for triangle in _triangulate(polygon.points):
+        if _triangle_strictly_contains(*triangle, point):
+            return True
+        a, b, c = triangle
+        if _on_segment(point, a, b) or _on_segment(point, b, c) or _on_segment(point, c, a):
+            return True
+    return False
