@@ -133,6 +133,18 @@ class DebugConfig(StrictModel):
     enabled: bool = True
 
 
+class RunnerConfig(StrictModel):
+    """Frame-loop orchestration settings (REQ-44).
+
+    `max_consecutive_core_errors`: how many consecutive core-chain
+    (detection/tracking/assignment/state) failures in a row the frame loop
+    tolerates before aborting with a fatal error; a single successful
+    frame resets the counter. Default 30 per REQ-44's AC.
+    """
+
+    max_consecutive_core_errors: int = Field(default=30, ge=1)
+
+
 class PathsConfig(StrictModel):
     calibration_authoring: Path
     calibration_runtime: Path
@@ -245,6 +257,7 @@ class Config(StrictModel):
     ports: PortsConfig = Field(default_factory=PortsConfig)
     export: ExportConfig = Field(default_factory=ExportConfig)
     debug: DebugConfig = Field(default_factory=DebugConfig)
+    runner: RunnerConfig = Field(default_factory=RunnerConfig)
     aruco: ArucoDetectionConfig | None = None
     coco: CocoDetectionConfig | None = None
     perturbation: PerturbationConfig | None = None

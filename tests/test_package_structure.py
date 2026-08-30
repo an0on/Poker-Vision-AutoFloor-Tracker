@@ -12,6 +12,7 @@ EXPECTED_SUBMODULES = [
     "export",
     "debug",
     "tools",
+    "runner",
 ]
 
 

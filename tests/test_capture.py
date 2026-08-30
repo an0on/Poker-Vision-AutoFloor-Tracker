@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import queue
 from pathlib import Path
 
 import cv2
@@ -65,6 +66,48 @@ class FakeVideoCapture:
 
     def release(self) -> None:
         self.released = True
+
+
+class GatedVideoCapture:
+    """Controllable stand-in for `cv2.VideoCapture` (REQ-16, REQ-44).
+
+    Unlike `FakeVideoCapture`, `read()` blocks until the test explicitly
+    supplies the next frame (or a read failure) via `push()` -- required
+    to deterministically drive `ContinuityCapture`'s background reader
+    thread without any timing-based flakiness. `push(None)` simulates a
+    failed `read()` (`ok=False`), exactly like a real camera disappearing.
+
+    `release()` also pushes a failure sentinel: this mirrors how a real
+    `cv2.VideoCapture` unblocks a concurrently in-flight `read()` once
+    released, which is what lets `ContinuityCapture.close()` interrupt its
+    background thread instead of blocking on it forever.
+    """
+
+    def __init__(self, opened: bool = True) -> None:
+        self._opened = opened
+        self._queue: queue.Queue[np.ndarray | None] = queue.Queue()
+        self.released = False
+
+    def isOpened(self) -> bool:  # noqa: N802
+        return self._opened
+
+    def push(self, frame: np.ndarray | None) -> None:
+        self._queue.put(frame)
+
+    def drain(self) -> None:
+        """Block until every `push()`-ed item has been consumed by `read()`."""
+        self._queue.join()
+
+    def read(self) -> tuple[bool, np.ndarray | None]:
+        frame = self._queue.get()
+        self._queue.task_done()
+        if frame is None:
+            return False, None
+        return True, frame
+
+    def release(self) -> None:
+        self.released = True
+        self._queue.put(None)
 
 
 # --- Frame / Capture shape -------------------------------------------------
@@ -259,32 +302,68 @@ def test_continuity_capture_releases_handle_when_open_fails():
 
 
 def test_continuity_capture_yields_frames_from_injected_backend():
-    frames = [np.full((240, 320, 3), i, dtype=np.uint8) for i in range(3)]
-    fake = FakeVideoCapture(opened=True, frames=frames)
+    fake = GatedVideoCapture()
+    with ContinuityCapture(0, CAP, capture_factory=lambda _idx: fake, wait_timeout=0.05) as capture:
+        fake.push(np.full((240, 320, 3), 7, dtype=np.uint8))
+        first = next(capture)
+        fake.push(np.full((240, 320, 3), 8, dtype=np.uint8))
+        second = next(capture)
 
-    with ContinuityCapture(0, CAP, capture_factory=lambda _idx: fake) as capture:
-        # `continuity` is a live source and never raises StopIteration
-        # (REQ-16), so pull exactly the fake backend's frame count rather
-        # than draining via list().
-        collected = [next(capture) for _ in range(len(frames))]
-
-    assert [f.frame_index for f in collected] == [0, 1, 2]
-    assert all(f.source_id == "continuity:0" for f in collected)
+    assert [first.frame_index, second.frame_index] == [0, 1]
+    assert first.source_id == second.source_id == "continuity:0"
     assert fake.released
 
 
 def test_continuity_capture_read_failure_raises_runtime_error():
-    fake = FakeVideoCapture(opened=True, frames=[])
-    with ContinuityCapture(0, CAP, capture_factory=lambda _idx: fake) as capture:
+    fake = GatedVideoCapture()
+    with ContinuityCapture(0, CAP, capture_factory=lambda _idx: fake, wait_timeout=0.05) as capture:
+        fake.push(None)
         with pytest.raises(RuntimeError, match="failed to read frame"):
             next(capture)
 
 
 def test_continuity_capture_close_releases_underlying_capture():
-    fake = FakeVideoCapture(opened=True, frames=[])
-    capture = ContinuityCapture(0, CAP, capture_factory=lambda _idx: fake)
+    fake = GatedVideoCapture()
+    capture = ContinuityCapture(0, CAP, capture_factory=lambda _idx: fake, wait_timeout=0.05)
     capture.close()
     assert fake.released
+
+
+# --- REQ-44: backpressure/pacing for the live source ------------------------
+
+
+def test_continuity_capture_slow_consumer_gets_latest_frame_with_no_backlog():
+    # A frame loop slower than the camera: five frames are read by the
+    # background thread before the loop ever asks for one. It must get
+    # only the freshest (index 4), never build a backlog of the earlier
+    # ones, and never block past its wait timeout once a frame exists.
+    fake = GatedVideoCapture()
+    with ContinuityCapture(0, CAP, capture_factory=lambda _idx: fake, wait_timeout=0.05) as capture:
+        for i in range(5):
+            fake.push(np.full((240, 320, 3), i, dtype=np.uint8))
+        fake.drain()  # background thread has now read and published all five
+
+        frame = next(capture)
+        assert frame.frame_index == 4
+
+
+def test_continuity_capture_fast_consumer_never_receives_duplicate_frame_index():
+    # A frame loop faster than the camera: it must never see the same
+    # frame_index twice -- a repeat poll before a new frame exists times
+    # out (returns None from the buffer) rather than redelivering the
+    # last one.
+    fake = GatedVideoCapture()
+    with ContinuityCapture(0, CAP, capture_factory=lambda _idx: fake, wait_timeout=0.05) as capture:
+        fake.push(np.zeros((240, 320, 3), dtype=np.uint8))
+        first = next(capture)
+        assert first.frame_index == 0
+
+        assert capture._buffer.get_latest(timeout=0.05) is None
+
+        fake.push(np.full((240, 320, 3), 9, dtype=np.uint8))
+        second = next(capture)
+        assert second.frame_index == 1
+        assert second is not first
 
 
 # --- create_capture factory --------------------------------------------------
