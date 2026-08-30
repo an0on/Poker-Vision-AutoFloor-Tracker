@@ -15,6 +15,7 @@ from typing import Literal
 
 from pydantic import Field, ValidationError, field_validator, model_validator
 
+from poker_vision.detection.models import DetectionClass
 from poker_vision.schema_base import StrictModel
 
 CONFIG_SCHEMA_VERSION: Literal["1.0"] = "1.0"
@@ -101,6 +102,53 @@ class PathsConfig(StrictModel):
     mock_script: Path | None = None
 
 
+class ArucoDictionary(StrEnum):
+    """Mirrors OpenCV's predefined ArUco dictionaries by name (REQ-19).
+
+    `mock`'s Modus B (`detection/mock_aruco.py`) looks the matching
+    `cv2.aruco.DICT_*` constant up by this member's value, so names here must
+    stay identical to OpenCV's own.
+    """
+
+    DICT_4X4_50 = "DICT_4X4_50"
+    DICT_4X4_100 = "DICT_4X4_100"
+    DICT_4X4_250 = "DICT_4X4_250"
+    DICT_4X4_1000 = "DICT_4X4_1000"
+    DICT_5X5_50 = "DICT_5X5_50"
+    DICT_5X5_100 = "DICT_5X5_100"
+    DICT_5X5_250 = "DICT_5X5_250"
+    DICT_5X5_1000 = "DICT_5X5_1000"
+    DICT_6X6_50 = "DICT_6X6_50"
+    DICT_6X6_100 = "DICT_6X6_100"
+    DICT_6X6_250 = "DICT_6X6_250"
+    DICT_6X6_1000 = "DICT_6X6_1000"
+    DICT_7X7_50 = "DICT_7X7_50"
+    DICT_7X7_100 = "DICT_7X7_100"
+    DICT_7X7_250 = "DICT_7X7_250"
+    DICT_7X7_1000 = "DICT_7X7_1000"
+    DICT_ARUCO_ORIGINAL = "DICT_ARUCO_ORIGINAL"
+
+
+class ArucoDetectionConfig(StrictModel):
+    """`mock` detector Modus B config (REQ-19): marker-ID -> class mapping.
+
+    A marker whose ID has no entry here is not one of this project's
+    objects (e.g. a calibration reference marker sharing the same physical
+    frame) and is ignored by the detector, the same way a real detector
+    simply doesn't report classes outside its trained set.
+    """
+
+    dictionary: ArucoDictionary = ArucoDictionary.DICT_4X4_50
+    marker_class_map: dict[int, DetectionClass]
+
+    @field_validator("marker_class_map")
+    @classmethod
+    def _check_nonempty(cls, value: dict[int, DetectionClass]) -> dict[int, DetectionClass]:
+        if not value:
+            raise ValueError("aruco.marker_class_map must not be empty")
+        return value
+
+
 class Config(StrictModel):
     schema_version: Literal["1.0"]
     device: DeviceType
@@ -109,6 +157,7 @@ class Config(StrictModel):
     thresholds: ThresholdsConfig = Field(default_factory=ThresholdsConfig)
     hysteresis: HysteresisConfig = Field(default_factory=HysteresisConfig)
     ports: PortsConfig = Field(default_factory=PortsConfig)
+    aruco: ArucoDetectionConfig | None = None
 
     @field_validator("device")
     @classmethod
