@@ -15,12 +15,12 @@ trackers share the one piece of detection logic behind that signal --
 counting `card` tracks in `board_zone` -- via `count_board_cards`
 (`board.py`), so it is computed once and can't drift between the two. Each
 tracker still owns its own private `hand_id` counter, though: this module
-is the canonical source of hand boundaries per REQ-32, but wiring that up
-as the literal, shared value `StreetTracker` uses is REQ-33's job (the
-composing state machine that also unifies the per-tracker `sequence`
-counters into one global one). Because both trackers apply the identical
-rule to the same input stream, their `hand_id` numbers stay in sync on a
-single-table replay in the meantime.
+is the canonical source of hand boundaries per REQ-32.
+`PipelineStateMachine` (`machine.py`) wires that up as the literal, shared
+value on `StreetChangedEvent`, overwriting `StreetTracker`'s own private
+counter with this tracker's `hand_id` for REQ-33, on the strength of the
+fact that both trackers apply the identical rule to the same input stream
+and so already agree numerically on a single-table replay.
 """
 
 from __future__ import annotations
@@ -48,8 +48,9 @@ class HandTracker:
 
     `sequence` numbers emitted events with a private, monotonically
     increasing counter starting at 0, independent of the other trackers'
-    -- composing sibling event sources under one shared, globally monotonic
-    counter is REQ-33's job, not this one's (see `occupancy.py`).
+    -- `PipelineStateMachine` (`machine.py`) composes sibling event sources
+    under one shared, globally monotonic counter for REQ-33 (see
+    `occupancy.py`).
     """
 
     def __init__(self) -> None:
