@@ -145,6 +145,14 @@ once, with the summary of what was found/fixed.
 #### Backpressure / Pacing
 - Live-Quelle: latest-frame-wins — ist die Verarbeitung langsamer als die
   Kamera, werden Frames gedroppt (immer aktuellster Frame).
+- Umsetzung in `continuity`: interner Hintergrund-Thread liest kontinuierlich
+  von der Kamera und schreibt in einen thread-sicheren Single-Slot-Puffer
+  (dasselbe latest-wins-Pattern wie `LatestFrameHub` aus REQ-46, nicht
+  `cv2.CAP_PROP_BUFFERSIZE` — dessen Verhalten ist backend-abhängig
+  unzuverlässig). Der Loop selbst bleibt single-threaded und synchron: er
+  ruft nicht-blockierend `get_latest()` auf diesem Puffer ab statt `read()`
+  direkt auf der Kamera; das Dropping passiert im Hintergrund-Thread der
+  Capture-Implementierung, nicht im Loop.
 - Dateiquellen: kein Drop, jeder Frame wird verarbeitet (deterministisch,
   wichtig für Regressionstests). Kein Realtime-Pacing per Default;
   optionales `--realtime`-Flag als späteres Nice-to-have, nicht Teil der REQs.

@@ -150,6 +150,13 @@ Acceptance Criteria:
 - [ ] EOF bei video_file/image_dir beendet den Loop regulär (Status "completed").
 - [ ] Vollständiger Loop-Durchlauf ist headless testbar: mock-Detection,
       image_dir-Capture, jsonl-Export — ohne Kamera, GUI oder Netzwerk.
+- [ ] Bei Live-Quelle (`continuity`) liest ein interner Hintergrund-Thread
+      kontinuierlich und schreibt in einen thread-sicheren Single-Slot-Puffer
+      (latest-wins, analog `LatestFrameHub` aus REQ-46, nicht
+      `cv2.CAP_PROP_BUFFERSIZE`); der Loop ruft nicht-blockierend
+      `get_latest()` ab statt direkt `read()` (Test: Verarbeitung langsamer
+      als Frame-Rate der Quelle → Loop erhält stets den aktuellsten Frame,
+      kein Backlog, kein Blockieren des Loops).
 
 ##### REQ-45 — CLI-Einstiegspunkt & Lifecycle
 Der Runner ist über ein CLI startbar, config-gesteuert und fährt auf
