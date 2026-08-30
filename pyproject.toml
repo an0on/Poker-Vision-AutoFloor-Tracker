@@ -5,6 +5,8 @@ description = "Local CV pipeline for poker table analysis (seat occupancy, deale
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.5",
+    "numpy>=1.26",
+    "opencv-python-headless>=4.9",
 ]
 
 [dependency-groups]
