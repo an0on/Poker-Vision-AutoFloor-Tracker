@@ -34,6 +34,22 @@ no per-token billing. Read the findings yourself; if something needs
 fixing, describe it to Claude Code directly in your next message rather
 than through any automated hand-off.
 
+## Codex review loop
+
+After implementation, run `codex review --base main` yourself.
+
+- Clear technical findings (bugs, missing validation, incorrect
+  computation, edge cases) — fix them yourself and re-run the review,
+  without asking first. Cap: 3 iterations.
+- Findings that require a scope decision (does this belong in the
+  current REQ or a later one, PRD wording is ambiguous, multiple valid
+  interpretations exist) — stop and ask, as before. Don't guess.
+- After finishing (review clean, or the 3-iteration cap reached without
+  a clean result), summarize what was found and fixed each round, then
+  ask whether to push and open the PR. If the cap was reached without a
+  clean review, say so explicitly and describe the remaining finding(s)
+  rather than pushing anyway.
+
 ## Not allowed
 - Direct pushes to `main`.
 - Force-pushing shared branches.
