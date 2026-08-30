@@ -151,6 +151,28 @@ def test_hysteresis_per_class_unknown_key_rejected():
         Config.model_validate(payload)
 
 
+# REQ-37a: jsonl/websocket default on, tournament_director defaults off
+def test_export_defaults():
+    config = Config.model_validate(VALID_CONFIG)
+    assert config.export.jsonl is True
+    assert config.export.websocket is True
+    assert config.export.tournament_director is False
+
+
+def test_export_flags_individually_overridable():
+    payload = _config(export={"jsonl": False, "websocket": False, "tournament_director": True})
+    config = Config.model_validate(payload)
+    assert config.export.jsonl is False
+    assert config.export.websocket is False
+    assert config.export.tournament_director is True
+
+
+def test_export_unknown_field_rejected():
+    payload = _config(export={"jsonl": True, "typo_field": True})
+    with pytest.raises(ValidationError):
+        Config.model_validate(payload)
+
+
 def test_load_config_from_json_file(tmp_path):
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps(VALID_CONFIG))

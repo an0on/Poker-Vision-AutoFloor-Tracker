@@ -106,6 +106,20 @@ class PortsConfig(StrictModel):
         return self
 
 
+class ExportConfig(StrictModel):
+    """Per-adapter enable flags (REQ-37a): each of the three export adapters
+    -- `jsonl` (REQ-34), `websocket` (REQ-35), `tournament_director` (REQ-36)
+    -- can be switched on or off independently. `tournament_director`
+    defaults off: it has no functional integration yet (Windows-phase
+    stub), so enabling it is an explicit opt-in rather than something every
+    run does by default.
+    """
+
+    jsonl: bool = True
+    websocket: bool = True
+    tournament_director: bool = False
+
+
 class PathsConfig(StrictModel):
     calibration_authoring: Path
     calibration_runtime: Path
@@ -216,6 +230,7 @@ class Config(StrictModel):
     thresholds: ThresholdsConfig = Field(default_factory=ThresholdsConfig)
     hysteresis: HysteresisConfig = Field(default_factory=HysteresisConfig)
     ports: PortsConfig = Field(default_factory=PortsConfig)
+    export: ExportConfig = Field(default_factory=ExportConfig)
     aruco: ArucoDetectionConfig | None = None
     coco: CocoDetectionConfig | None = None
     perturbation: PerturbationConfig | None = None
