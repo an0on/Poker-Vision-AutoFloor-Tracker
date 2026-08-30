@@ -82,6 +82,30 @@ def test_unknown_device_value_rejected():
         Config.model_validate(_config(device="tpu"))
 
 
+# AC-13 / REQ-22: detector defaults to mock, the only detector v0.1 ships.
+def test_detector_defaults_to_mock():
+    config = Config.model_validate(VALID_CONFIG)
+    assert config.detector.value == "mock"
+
+
+def test_detector_mock_accepted():
+    config = Config.model_validate(_config(detector="mock"))
+    assert config.detector.value == "mock"
+
+
+# AC-13 (REQ-22): selecting `detector: yolo` fails at config load with a
+# message pointing at v0.2, mirroring device 'cuda' (REQ-3/AC-2).
+def test_detector_yolo_rejected_with_v02_hint():
+    with pytest.raises(ValidationError, match="not available in v0.1") as exc_info:
+        Config.model_validate(_config(detector="yolo"))
+    assert "v0.2" in str(exc_info.value)
+
+
+def test_unknown_detector_value_rejected():
+    with pytest.raises(ValidationError):
+        Config.model_validate(_config(detector="ssd"))
+
+
 def test_continuity_source_requires_device_index():
     payload = _config(source={"type": "continuity"})
     with pytest.raises(ValidationError, match="device_index is required"):
