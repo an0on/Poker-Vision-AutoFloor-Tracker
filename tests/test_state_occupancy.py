@@ -144,6 +144,20 @@ def test_sequence_is_monotonic_across_updates():
     assert second[0].sequence == 1
 
 
+# --- occupancy requires an actual chip track, not just the zone label ------
+
+
+def test_non_chip_assignment_labeled_chip_zone_does_not_count():
+    # ZoneAssignment doesn't itself tie zone to object_class, so a
+    # schema-valid but pipeline-impossible CHIP_ZONE hit from a different
+    # class must not count as occupancy (REQ-29 requires a chip track).
+    tracker = SeatOccupancyTracker(["seat_3"])
+    bogus = _assignment(1, DetectionClass.DEALER_BUTTON, ZoneKind.CHIP_ZONE, "seat_3")
+    events = tracker.update(_frame(bogus, frame_index=1))
+    assert events == []
+    assert tracker.snapshot() == {"seat_3": False}
+
+
 # --- unknown seat is a hard error, not a silent no-op ----------------------
 
 

@@ -18,6 +18,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 
 from poker_vision.assignment.models import FrameAssignments, ZoneKind
+from poker_vision.detection.models import DetectionClass
 from poker_vision.state.events import EVENT_SCHEMA_VERSION, SeatOccupiedEvent, SeatVacatedEvent
 
 SeatOccupancyEvent = SeatOccupiedEvent | SeatVacatedEvent
@@ -47,6 +48,14 @@ class SeatOccupancyTracker:
         occupied_now = set()
         for assignment in frame_assignments.assignments:
             if assignment.zone is not ZoneKind.CHIP_ZONE:
+                continue
+            # `ZoneAssignment` doesn't itself tie `zone` to `object_class` --
+            # only `assign_zones`'s own dispatch (REQ-26) ever produces a
+            # `CHIP_ZONE` assignment for a chip track today. Checking the
+            # class explicitly keeps REQ-29's "chip-Track" condition true by
+            # construction here too, not just by relying on that invariant
+            # holding upstream.
+            if assignment.object_class is not DetectionClass.CHIP:
                 continue
             seat_id = assignment.seat_id
             if seat_id not in self._occupied:
