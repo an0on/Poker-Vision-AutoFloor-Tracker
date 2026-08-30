@@ -49,6 +49,10 @@ class VideoFileCapture(Capture):
     def __next__(self) -> Frame:
         ok, image = self._cap.read()
         if not ok:
+            # Exhaustion releases the decoder too, matching the Capture
+            # contract (base.py) that a caller iterating without a `with`
+            # block still doesn't leak the underlying file handle.
+            self.close()
             raise StopIteration
         image = apply_resolution_cap(image, self._resolution_cap)
         frame = Frame(

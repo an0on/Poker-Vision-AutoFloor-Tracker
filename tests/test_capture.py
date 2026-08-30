@@ -207,6 +207,15 @@ def test_video_file_capture_missing_file_raises(tmp_path):
         VideoFileCapture(tmp_path / "does_not_exist.avi", CAP)
 
 
+def test_video_file_capture_releases_decoder_on_exhaustion(tmp_path):
+    video_path = _make_video_file(tmp_path, count=1)
+    capture = VideoFileCapture(video_path, CAP)  # no `with`, on purpose
+    next(capture)
+    with pytest.raises(StopIteration):
+        next(capture)
+    assert not capture._cap.isOpened()
+
+
 def test_video_file_capture_frames_are_capped(tmp_path):
     video_path = _make_video_file(tmp_path, count=1)
     small_cap = Resolution(width=160, height=120)
