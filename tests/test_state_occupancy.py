@@ -174,3 +174,20 @@ def test_snapshot_reflects_current_state():
     tracker = SeatOccupancyTracker(["seat_1", "seat_2"])
     tracker.update(_frame(_chip_zone(1, "seat_1"), frame_index=1))
     assert tracker.snapshot() == {"seat_1": True, "seat_2": False}
+
+
+# --- validate(): raises like update() would, without mutating state (REQ-33) -
+
+
+def test_validate_raises_on_unknown_seat_without_mutating_state():
+    tracker = SeatOccupancyTracker(["seat_1"])
+    with pytest.raises(ValueError, match="seat_9"):
+        tracker.validate(_frame(_chip_zone(1, "seat_9"), frame_index=0))
+    assert tracker.snapshot() == {"seat_1": False}
+
+
+def test_validate_passes_silently_on_a_valid_frame():
+    tracker = SeatOccupancyTracker(["seat_1"])
+    tracker.validate(_frame(_chip_zone(1, "seat_1"), frame_index=0))
+    # validate() never mutates -- the seat is still unoccupied until update().
+    assert tracker.snapshot() == {"seat_1": False}

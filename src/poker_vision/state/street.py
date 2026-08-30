@@ -57,25 +57,26 @@ class StreetTracker:
 
     `sequence` numbers emitted events with a private, monotonically
     increasing counter starting at 0, independent of the other trackers'
-    -- composing sibling event sources under one shared, globally monotonic
-    counter is later work's job, not this one's (see `occupancy.py`).
+    -- `PipelineStateMachine` (`machine.py`) composes sibling event sources
+    under one shared, globally monotonic counter for REQ-33 (see
+    `occupancy.py`).
 
     `hand_id` is REQ-33's mandatory field on `StreetChangedEvent`, but
     REQ-31 has no concept of a "hand" of its own -- that is REQ-32's
     `HandTracker` (`hand.py`), defined purely by the board going empty <->
     non-empty (AGENTS.md), independent of whether a valid street was ever
-    reached in between. Until a composing state machine can hand this
-    tracker the real, shared `hand_id` (REQ-33), this tracker maintains its
-    own private counter that bumps on every non-empty -> empty transition
-    of the board -- the same transition `HandTracker` reacts to, via the
-    shared `count_board_cards` (`board.py`) -- so it advances even for a
-    "hand" that only ever showed 1, 2, or >5 stable cards and never reached
-    a valid street. Because both trackers apply that identical rule to the
-    same input stream, their `hand_id` counters stay numerically in sync
-    for a single-table replay without either referencing the other's
-    state; they are still two separate counter objects, not one shared
-    object -- unifying them behind one canonical source remains REQ-33's
-    job.
+    reached in between. This tracker still maintains its own private
+    counter that bumps on every non-empty -> empty transition of the board
+    -- the same transition `HandTracker` reacts to, via the shared
+    `count_board_cards` (`board.py`) -- so it advances even for a "hand"
+    that only ever showed 1, 2, or >5 stable cards and never reached a
+    valid street. `PipelineStateMachine` overwrites this tracker's
+    `hand_id` on every emitted `StreetChangedEvent` with `HandTracker`'s
+    real, canonical one instead -- the two stay numerically in sync on a
+    single-table replay regardless, since both apply that identical rule
+    to the same input stream, but REQ-33's composition is what actually
+    makes `HandTracker` the one source of truth rather than relying on
+    that emergent agreement.
     """
 
     def __init__(self) -> None:

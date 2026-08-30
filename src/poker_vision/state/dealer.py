@@ -47,9 +47,9 @@ class DealerSeatTracker:
 
     `sequence` numbers emitted events with a private, monotonically
     increasing counter starting at 0, independent of
-    `SeatOccupancyTracker`'s -- composing sibling event sources under one
-    shared, globally monotonic counter is later work's job, not this
-    one's (see `occupancy.py`).
+    `SeatOccupancyTracker`'s -- `PipelineStateMachine` (`machine.py`) is
+    what composes sibling event sources under one shared, globally
+    monotonic counter for REQ-33 (see `occupancy.py`).
     """
 
     def __init__(self, seat_ids: Iterable[str]) -> None:
@@ -58,33 +58,14 @@ class DealerSeatTracker:
         self._sequence = 0
 
     def update(self, frame_assignments: FrameAssignments) -> list[DealerMovedEvent]:
-        candidates = [
-            assignment
-            for assignment in frame_assignments.assignments
-            if assignment.object_class is DetectionClass.DEALER_BUTTON
-            and assignment.zone in _SEAT_RESOLVED_ZONE_KINDS
-            and assignment.seat_id is not None
-        ]
-        if len(candidates) > 1:
-            raise ValueError(
-                "FrameAssignments contains multiple seat-resolved dealer_button "
-                f"assignments in one frame ({[a.seat_id for a in candidates]}) -- only "
-                "one physical dealer button is expected at a time"
-            )
-        if not candidates:
+        seat_id = self._resolve_candidate_seat(frame_assignments)
+        if seat_id is None:
             # No seat-resolved button this frame -- absent entirely, or
             # present but still seat-less (REQ-27's threshold missed).
             # Either way the last known dealer seat carries forward
             # unchanged, no event (AC-18).
             return []
 
-        seat_id = candidates[0].seat_id
-        assert seat_id is not None  # filtered above
-        if seat_id not in self._seat_ids:
-            raise ValueError(
-                f"FrameAssignments references seat '{seat_id}', which is not in this "
-                "tracker's seat universe -- constructed from a different calibration?"
-            )
         if seat_id == self._dealer_seat:
             return []
 
@@ -104,6 +85,49 @@ class DealerSeatTracker:
             to_seat=seat_id,
         )
         return [event]
+
+    def _resolve_candidate_seat(self, frame_assignments: FrameAssignments) -> str | None:
+        """Which seat the current dealer_button resolves to this frame -- read-only.
+
+        Returns `None` when no seat-resolved button is present (carry
+        forward, no error). Raises before touching `self._dealer_seat`, so
+        this doubles as the validation half of `validate()`: either the
+        frame resolves cleanly (or not at all) and the caller gets a clean
+        result, or nothing about this tracker's state has changed yet.
+        """
+        candidates = [
+            assignment
+            for assignment in frame_assignments.assignments
+            if assignment.object_class is DetectionClass.DEALER_BUTTON
+            and assignment.zone in _SEAT_RESOLVED_ZONE_KINDS
+            and assignment.seat_id is not None
+        ]
+        if len(candidates) > 1:
+            raise ValueError(
+                "FrameAssignments contains multiple seat-resolved dealer_button "
+                f"assignments in one frame ({[a.seat_id for a in candidates]}) -- only "
+                "one physical dealer button is expected at a time"
+            )
+        if not candidates:
+            return None
+
+        seat_id = candidates[0].seat_id
+        assert seat_id is not None  # filtered above
+        if seat_id not in self._seat_ids:
+            raise ValueError(
+                f"FrameAssignments references seat '{seat_id}', which is not in this "
+                "tracker's seat universe -- constructed from a different calibration?"
+            )
+        return seat_id
+
+    def validate(self, frame_assignments: FrameAssignments) -> None:
+        """Raise if `frame_assignments` violates this tracker's invariants -- no mutation.
+
+        Lets `PipelineStateMachine` (`machine.py`) check every tracker's
+        invariants for a frame before mutating any of them, so a frame one
+        sibling tracker rejects can't leave this one's state half-applied.
+        """
+        self._resolve_candidate_seat(frame_assignments)
 
     def _next_sequence(self) -> int:
         sequence = self._sequence

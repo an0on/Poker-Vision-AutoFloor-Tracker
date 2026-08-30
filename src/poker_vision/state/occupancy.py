@@ -34,10 +34,11 @@ class SeatOccupancyTracker:
     for a seat that never showed a chip before.
 
     `sequence` numbers emitted events with a private, monotonically
-    increasing counter starting at 0. That satisfies REQ-33's "monoton" for
-    this tracker in isolation; once REQ-30/31/32 add sibling event sources,
-    composing them under one shared, globally monotonic counter is that
-    later work's job, not this one's.
+    increasing counter starting at 0 -- correct for this tracker in
+    isolation, but not "global monoton über ALLE Event-Quellen" once
+    `DealerSeatTracker`/`StreetTracker`/`HandTracker` run alongside it.
+    `PipelineStateMachine` (`machine.py`) is what composes all four under
+    one shared, globally monotonic counter for REQ-33.
     """
 
     def __init__(self, seat_ids: Iterable[str]) -> None:
@@ -45,25 +46,7 @@ class SeatOccupancyTracker:
         self._sequence = 0
 
     def update(self, frame_assignments: FrameAssignments) -> list[SeatOccupancyEvent]:
-        occupied_now = set()
-        for assignment in frame_assignments.assignments:
-            if assignment.zone is not ZoneKind.CHIP_ZONE:
-                continue
-            # `ZoneAssignment` doesn't itself tie `zone` to `object_class` --
-            # only `assign_zones`'s own dispatch (REQ-26) ever produces a
-            # `CHIP_ZONE` assignment for a chip track today. Checking the
-            # class explicitly keeps REQ-29's "chip-Track" condition true by
-            # construction here too, not just by relying on that invariant
-            # holding upstream.
-            if assignment.object_class is not DetectionClass.CHIP:
-                continue
-            seat_id = assignment.seat_id
-            if seat_id not in self._occupied:
-                raise ValueError(
-                    f"FrameAssignments references seat '{seat_id}', which is not in this "
-                    "tracker's seat universe -- constructed from a different calibration?"
-                )
-            occupied_now.add(seat_id)
+        occupied_now = self._resolve_occupied_seats(frame_assignments)
 
         timestamp = datetime.now(UTC)
         events: list[SeatOccupancyEvent] = []
@@ -83,6 +66,44 @@ class SeatOccupancyTracker:
                 )
             )
         return events
+
+    def _resolve_occupied_seats(self, frame_assignments: FrameAssignments) -> set[str]:
+        """Which seats have a chip in their `chip_zone` this frame -- read-only.
+
+        Raises before touching `self._occupied`, so this doubles as the
+        validation half of `validate()`: either every referenced seat is
+        known and the caller gets a clean result, or nothing about this
+        tracker's state has changed yet.
+        """
+        occupied_now: set[str] = set()
+        for assignment in frame_assignments.assignments:
+            if assignment.zone is not ZoneKind.CHIP_ZONE:
+                continue
+            # `ZoneAssignment` doesn't itself tie `zone` to `object_class` --
+            # only `assign_zones`'s own dispatch (REQ-26) ever produces a
+            # `CHIP_ZONE` assignment for a chip track today. Checking the
+            # class explicitly keeps REQ-29's "chip-Track" condition true by
+            # construction here too, not just by relying on that invariant
+            # holding upstream.
+            if assignment.object_class is not DetectionClass.CHIP:
+                continue
+            seat_id = assignment.seat_id
+            if seat_id not in self._occupied:
+                raise ValueError(
+                    f"FrameAssignments references seat '{seat_id}', which is not in this "
+                    "tracker's seat universe -- constructed from a different calibration?"
+                )
+            occupied_now.add(seat_id)
+        return occupied_now
+
+    def validate(self, frame_assignments: FrameAssignments) -> None:
+        """Raise if `frame_assignments` references an unknown seat -- no mutation.
+
+        Lets `PipelineStateMachine` (`machine.py`) check every tracker's
+        invariants for a frame before mutating any of them, so a frame one
+        sibling tracker rejects can't leave this one's state half-applied.
+        """
+        self._resolve_occupied_seats(frame_assignments)
 
     def _next_sequence(self) -> int:
         sequence = self._sequence
