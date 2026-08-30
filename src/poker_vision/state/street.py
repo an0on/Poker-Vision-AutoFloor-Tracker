@@ -62,18 +62,22 @@ class StreetTracker:
 
     `hand_id` is REQ-33's mandatory field on `StreetChangedEvent`, but
     REQ-31 has no concept of a "hand" of its own -- that is REQ-32's
-    `hand_started`/`hand_ended` tracker. Until that tracker exists and a
-    composing state machine can hand this tracker the real, shared
-    `hand_id`, this tracker maintains its own private counter that bumps
-    every time the board goes from a committed street back to stably
-    empty -- the same board-empty signal REQ-32 will need to detect a hand
-    boundary in the first place. That makes the numbering here consistent
-    with what REQ-32 will produce for a single-table replay, but it is not
-    the same counter object; reconciling the two remains later work.
+    `hand_started`/`hand_ended` tracker, defined purely by the board going
+    empty <-> non-empty (AGENTS.md), independent of whether a valid street
+    was ever reached in between. Until that tracker exists and a composing
+    state machine can hand this tracker the real, shared `hand_id`, this
+    tracker maintains its own private counter that bumps on every
+    non-empty -> empty transition of the board -- the same signal REQ-32
+    will use for `hand_ended` -- so it advances even for a "hand" that only
+    ever showed 1, 2, or >5 stable cards and never reached a valid street.
+    That makes the numbering here consistent with what REQ-32 will produce
+    for a single-table replay, but it is not the same counter object;
+    reconciling the two remains later work.
     """
 
     def __init__(self) -> None:
         self._current_street: Street | None = None
+        self._board_active = False
         self._hand_id = 1
         self._sequence = 0
 
@@ -85,12 +89,18 @@ class StreetTracker:
             and assignment.object_class is DetectionClass.CARD
         )
 
+        if count > 0 and not self._board_active:
+            self._board_active = True
+        elif count == 0 and self._board_active:
+            # Stable empty board -- hand boundary regardless of whether a
+            # valid street was ever reached this hand (AGENTS.md's "Board
+            # leer <-> nicht-leer"). Reset the monotonic gate and advance
+            # the hand id for the next hand.
+            self._board_active = False
+            self._current_street = None
+            self._hand_id += 1
+
         if count == 0:
-            if self._current_street is not None:
-                # Stable empty board -- reset the monotonic gate for the
-                # next hand (AC-19's "Rücksprung erst bei leerem Board").
-                self._current_street = None
-                self._hand_id += 1
             return []
 
         street = _COUNT_TO_STREET.get(count)

@@ -120,7 +120,10 @@ def test_dip_to_in_between_count_does_not_reset_the_gate():
     assert tracker.snapshot() == Street.FLOP
 
 
-def test_empty_board_before_any_street_reached_does_not_bump_hand_id():
+def test_hand_id_bumps_even_if_no_valid_street_was_ever_reached():
+    # Hand boundaries are board empty <-> non-empty (AGENTS.md), not
+    # "a valid street was reached" -- a hand that only ever showed a
+    # misdetected count still counts as a hand for numbering purposes.
     tracker = StreetTracker()
 
     tracker.update(_frame(1, frame_index=0))
@@ -128,7 +131,7 @@ def test_empty_board_before_any_street_reached_does_not_bump_hand_id():
     flop_events = tracker.update(_frame(3, frame_index=2))
 
     assert len(flop_events) == 1
-    assert flop_events[0].hand_id == 1
+    assert flop_events[0].hand_id == 2
 
 
 # --- events carry frame_index and a monotonic per-tracker sequence ---------
@@ -143,6 +146,19 @@ def test_events_carry_frame_index_and_monotonic_sequence():
     assert flop_events[0].frame_index == 7
     assert turn_events[0].frame_index == 8
     assert turn_events[0].sequence == flop_events[0].sequence + 1
+
+
+def test_hand_id_bumps_across_a_hand_that_never_reached_a_valid_street():
+    tracker = StreetTracker()
+
+    # First hand: board goes non-empty but only ever shows a misdetected
+    # count (>5), never a valid street, then goes empty again.
+    tracker.update(_frame(6, frame_index=0))
+    tracker.update(_frame(0, frame_index=1))
+
+    # Second hand reaches flop -- must carry hand_id 2, not 1.
+    second_hand_flop = tracker.update(_frame(3, frame_index=2))
+    assert second_hand_flop[0].hand_id == 2
 
 
 def test_snapshot_starts_at_none():
