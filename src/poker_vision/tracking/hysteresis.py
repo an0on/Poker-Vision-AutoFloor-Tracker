@@ -25,6 +25,23 @@ per class via `HysteresisConfig.per_class` (keyed by `DetectionClass.value`;
 either field may be overridden independently, the other falls back to the
 global default).
 
+`n_on`/`n_off` count actual frames, not `update()` calls: `frame_index` is
+the authority. Every `Capture`/`Detector` implementation in this project
+calls this stage once per captured frame (see e.g. `mock`'s Modus A: "A
+frame index with no line in the script yields no detections", not "no
+call"), so in normal operation frame indices arrive one at a time with no
+gaps. But `TrackedFrame.frame_index` itself carries no such guarantee, and
+`NearestMatchTracker` explicitly punts exact frame accounting to this
+stage (its own TTL is deliberately keyed on call count, not frame_index --
+see its docstring). So `update()` treats a jump in `frame_index` between
+two calls as that many frames having silently elapsed with no data at all:
+every pending (not-yet-confirmed) track's run is broken, exactly as if it
+had been missed that many times, and every confirmed track accrues that
+many misses toward `n_off` before the current call's own sightings are
+even considered. A non-increasing `frame_index` (equal to or before the
+last processed one) can only mean a caller replayed or reordered frames --
+that is rejected outright rather than silently reinterpreted.
+
 This is a separate stage from `NearestMatchTracker`, not a parameter to it:
 it owns its own per-(class, track_id) present/absent state, decoupled from
 the tracker's internal matching state (which tracks a different, shorter-
@@ -64,8 +81,23 @@ class HysteresisFilter:
         # Last known TrackedObject for every currently-confirmed track;
         # carried forward on frames where it's missing but not yet expired.
         self._confirmed: dict[DetectionClass, dict[int, TrackedObject]] = defaultdict(dict)
+        # frame_index of the last processed call; None before the first one.
+        self._last_frame_index: int | None = None
 
     def update(self, tracked_frame: TrackedFrame) -> TrackedFrame:
+        frame_index = tracked_frame.frame_index
+        if self._last_frame_index is None:
+            skipped_frames = 0
+        elif frame_index <= self._last_frame_index:
+            raise ValueError(
+                f"HysteresisFilter.update() received frame_index {frame_index}, which is "
+                f"not after the last processed frame_index {self._last_frame_index}; frames "
+                "must be applied in strictly increasing order so n_on/n_off can be counted "
+                "in actual frames"
+            )
+        else:
+            skipped_frames = frame_index - self._last_frame_index - 1
+
         seen_by_class: dict[DetectionClass, dict[int, TrackedObject]] = defaultdict(dict)
         for track in tracked_frame.tracks:
             seen_by_class[track.object_class][track.track_id] = track
@@ -73,11 +105,16 @@ class HysteresisFilter:
         known_classes = set(self._confirmed) | set(self._on_count) | set(seen_by_class)
         stable: list[TrackedObject] = []
         for object_class in known_classes:
-            stable.extend(self._update_class(object_class, seen_by_class.get(object_class, {})))
+            stable.extend(
+                self._update_class(
+                    object_class, seen_by_class.get(object_class, {}), skipped_frames
+                )
+            )
 
+        self._last_frame_index = frame_index
         return TrackedFrame(
             schema_version=TRACKING_SCHEMA_VERSION,
-            frame_index=tracked_frame.frame_index,
+            frame_index=frame_index,
             tracks=stable,
         )
 
@@ -90,12 +127,30 @@ class HysteresisFilter:
         return n_on, n_off
 
     def _update_class(
-        self, object_class: DetectionClass, seen: dict[int, TrackedObject]
+        self,
+        object_class: DetectionClass,
+        seen: dict[int, TrackedObject],
+        skipped_frames: int,
     ) -> list[TrackedObject]:
         n_on, n_off = self._thresholds(object_class)
         on_count = self._on_count[object_class]
         off_count = self._off_count[object_class]
         confirmed = self._confirmed[object_class]
+
+        if skipped_frames > 0:
+            # `skipped_frames` frames elapsed with no call at all for this
+            # class: every pending track's run is broken (a real gap, not
+            # just "not in this call's seen set"), and every confirmed
+            # track accrues that many misses toward n_off before this
+            # call's own sightings are considered at all.
+            on_count.clear()
+            for track_id in list(confirmed):
+                count = off_count.get(track_id, 0) + skipped_frames
+                if count >= n_off:
+                    del confirmed[track_id]
+                    off_count.pop(track_id, None)
+                else:
+                    off_count[track_id] = count
 
         stable: list[TrackedObject] = []
         for track_id, track in seen.items():

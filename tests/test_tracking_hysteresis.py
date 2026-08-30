@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from poker_vision.calibration.geometry import TablePoint
 from poker_vision.config import HysteresisConfig, HysteresisOverride
 from poker_vision.detection.models import DetectionClass
@@ -187,3 +189,54 @@ def test_output_schema_version_matches_tracked_frame():
     hysteresis = HysteresisFilter(HysteresisConfig(n_on=1))
     result = hysteresis.update(_frame(0, [_track(1)]))
     assert result.schema_version == "1.0"
+
+
+# Codex finding: n_on/n_off are defined in actual (`frame_index`) frames,
+# not update() calls. A jump in frame_index between two calls must count as
+# that many frames having silently elapsed with no data, not as a single
+# consecutive step.
+def test_frame_index_gap_counts_as_multiple_missed_frames_for_onset():
+    hysteresis = HysteresisFilter(HysteresisConfig(n_on=3, n_off=2))
+    hysteresis.update(_frame(0, [_track(5)]))  # on 1
+
+    # Jump straight to frame 100: two frames (1, 2) elapsed unseen in
+    # between, breaking the pending run just as two explicit empty calls
+    # would -- this call's sighting must only be on-count 1, not 2.
+    almost = hysteresis.update(_frame(100, [_track(5)]))
+    assert _stable_ids(almost) == set()
+
+    confirmed = hysteresis.update(_frame(101, [_track(5)]))
+    assert _stable_ids(confirmed) == set()  # on-count 2, n_on=3
+
+    confirmed = hysteresis.update(_frame(102, [_track(5)]))
+    assert _stable_ids(confirmed) == {5}  # on-count 3
+
+
+def test_frame_index_gap_counts_as_multiple_missed_frames_for_offset():
+    hysteresis = HysteresisFilter(HysteresisConfig(n_on=1, n_off=3))
+    hysteresis.update(_frame(0, [_track(5)]))  # confirmed immediately
+
+    # Frames 1 and 2 elapsed with no call at all -- a gap of 2 misses. One
+    # more explicit miss at frame 3 must reach n_off=3 and drop the track.
+    still_there = hysteresis.update(_frame(3, []))
+    assert _stable_ids(still_there) == set()
+
+
+def test_frame_index_gap_shorter_than_n_off_keeps_track_confirmed():
+    hysteresis = HysteresisFilter(HysteresisConfig(n_on=1, n_off=5))
+    hysteresis.update(_frame(0, [_track(5)]))  # confirmed immediately
+
+    # Only 2 frames elapsed unseen (indices 1, 2); n_off=5 not reached yet.
+    still_there = hysteresis.update(_frame(3, []))
+    assert _stable_ids(still_there) == {5}
+
+
+def test_non_increasing_frame_index_is_rejected():
+    hysteresis = HysteresisFilter(HysteresisConfig())
+    hysteresis.update(_frame(5, []))
+
+    with pytest.raises(ValueError, match="frame_index"):
+        hysteresis.update(_frame(5, []))
+
+    with pytest.raises(ValueError, match="frame_index"):
+        hysteresis.update(_frame(4, []))
