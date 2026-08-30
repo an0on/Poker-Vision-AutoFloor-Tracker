@@ -207,6 +207,31 @@ def test_track_evicted_before_matching_in_the_same_call_it_goes_stale():
     assert boundary.tracks[0].track_id != first_id
 
 
+# Codex finding: a rejected update() (invalid detection) must be atomic --
+# no call-count bump, no eviction -- otherwise a failed call can silently
+# push an unrelated, still-valid track over the staleness TTL.
+def test_rejected_update_has_no_side_effects_on_the_stale_ttl_clock():
+    tracker = _tracker()
+    first = tracker.update(_frame(0, [_chip(1.0, 1.0)]))
+    first_id = first.tracks[0].track_id
+
+    # One call short of the point where the *next* successful call would
+    # land exactly on the staleness boundary (age == TTL, not yet stale).
+    for frame_index in range(1, _STALE_TRACK_TTL_CALLS):
+        tracker.update(_frame(frame_index, []))
+
+    with pytest.raises(ValueError, match="outside the calibrated table"):
+        tracker.update(_frame(_STALE_TRACK_TTL_CALLS, [_chip(-1.0, 1.0)]))
+
+    # If the rejected call above had still bumped the call counter and run
+    # eviction, this call would land one step past the boundary and lose
+    # the ID. It must not: the failed call left no trace.
+    boundary = tracker.update(
+        _frame(_STALE_TRACK_TTL_CALLS + 1, [_chip(1.0, 1.0)])
+    )
+    assert boundary.tracks[0].track_id == first_id
+
+
 def test_track_survives_well_under_the_stale_ttl():
     tracker = _tracker()
     first = tracker.update(_frame(0, [_chip(1.0, 1.0)]))

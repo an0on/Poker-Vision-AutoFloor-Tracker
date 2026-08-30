@@ -80,6 +80,16 @@ class NearestMatchTracker:
         self._call_count = 0
 
     def update(self, frame_detections: FrameDetections) -> TrackedFrame:
+        # Validate before any state changes: a rejected call must be
+        # atomic -- no bumped call counter, no eviction -- so retrying with
+        # corrected detections sees exactly the state before the bad call,
+        # not one that was already (partly) advanced by it.
+        for detection in frame_detections.detections:
+            _check_within_table(detection.center, self._table, detection)
+            if detection.box is not None:
+                _check_within_table(detection.box.min, self._table, detection)
+                _check_within_table(detection.box.max, self._table, detection)
+
         self._call_count += 1
         # Evict before matching, not after: a track that just crossed the
         # TTL this call must not be resurrected by a same-call detection
@@ -87,12 +97,6 @@ class NearestMatchTracker:
         # `_last_matched_call` first and the eviction sweep below would find
         # nothing left to evict, defeating the point of the TTL.
         self._evict_stale_tracks()
-
-        for detection in frame_detections.detections:
-            _check_within_table(detection.center, self._table, detection)
-            if detection.box is not None:
-                _check_within_table(detection.box.min, self._table, detection)
-                _check_within_table(detection.box.max, self._table, detection)
 
         by_class: dict[DetectionClass, list[Detection]] = defaultdict(list)
         for detection in frame_detections.detections:
