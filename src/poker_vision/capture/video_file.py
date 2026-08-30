@@ -39,6 +39,10 @@ class VideoFileCapture(Capture):
             raise FileNotFoundError(f"video file not found: {self._path}")
         self._cap = cv2.VideoCapture(str(self._path))
         if not self._cap.isOpened():
+            # Construction never completes, so the caller never gets an
+            # object to call close() on — release here or a corrupt/
+            # unsupported file leaks the native decoder handle.
+            self._cap.release()
             raise ValueError(f"failed to open video file: {self._path}")
         reported_fps = self._cap.get(cv2.CAP_PROP_FPS)
         self._fps = reported_fps if reported_fps and reported_fps > 0 else _FALLBACK_FPS

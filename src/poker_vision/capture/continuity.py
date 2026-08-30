@@ -47,6 +47,10 @@ class ContinuityCapture(Capture):
     ) -> None:
         self._cap = capture_factory(device_index)
         if not self._cap.isOpened():
+            # Construction never completes, so the caller never gets an
+            # object to call close() on — release here or the native
+            # AVFoundation handle leaks and can block a later retry.
+            self._cap.release()
             raise RuntimeError(
                 f"continuity camera not available at device index {device_index} "
                 "(no fallback to another source, see REQ-16)"

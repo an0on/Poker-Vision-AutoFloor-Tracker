@@ -207,6 +207,20 @@ def test_video_file_capture_missing_file_raises(tmp_path):
         VideoFileCapture(tmp_path / "does_not_exist.avi", CAP)
 
 
+def test_video_file_capture_releases_handle_when_open_fails(tmp_path, monkeypatch):
+    # An existing but corrupt/unsupported file: opens the path fine, but
+    # the underlying decoder never reaches isOpened().
+    bogus_path = tmp_path / "corrupt.avi"
+    bogus_path.write_bytes(b"not a real video")
+    fake = FakeVideoCapture(opened=False)
+    monkeypatch.setattr(
+        "poker_vision.capture.video_file.cv2.VideoCapture", lambda _path: fake
+    )
+    with pytest.raises(ValueError, match="failed to open video file"):
+        VideoFileCapture(bogus_path, CAP)
+    assert fake.released
+
+
 def test_video_file_capture_releases_decoder_on_exhaustion(tmp_path):
     video_path = _make_video_file(tmp_path, count=1)
     capture = VideoFileCapture(video_path, CAP)  # no `with`, on purpose
@@ -235,6 +249,13 @@ def test_continuity_capture_missing_camera_raises_no_fallback():
 
     with pytest.raises(RuntimeError, match="not available"):
         ContinuityCapture(0, CAP, capture_factory=factory)
+
+
+def test_continuity_capture_releases_handle_when_open_fails():
+    fake = FakeVideoCapture(opened=False)
+    with pytest.raises(RuntimeError):
+        ContinuityCapture(0, CAP, capture_factory=lambda _idx: fake)
+    assert fake.released
 
 
 def test_continuity_capture_yields_frames_from_injected_backend():
