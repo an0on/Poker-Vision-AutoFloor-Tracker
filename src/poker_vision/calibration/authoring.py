@@ -16,9 +16,10 @@ from typing import Literal
 from pydantic import Field, ValidationError
 
 from poker_vision.calibration.camera import CameraIntrinsics, DistortionCoefficients
-from poker_vision.calibration.geometry import ImageDimensions, TableDimensions
+from poker_vision.calibration.geometry import TableDimensions
 from poker_vision.calibration.homography import HomographyCorrespondences
 from poker_vision.calibration.zones import CalibrationGeometryModel
+from poker_vision.config import Resolution
 
 CALIBRATION_AUTHORING_SCHEMA_VERSION: Literal["1.0"] = "1.0"
 
@@ -26,7 +27,12 @@ CALIBRATION_AUTHORING_SCHEMA_VERSION: Literal["1.0"] = "1.0"
 class CalibrationAuthoring(CalibrationGeometryModel):
     schema_version: Literal["1.0"]
     table_id: str = Field(min_length=1)
-    image: ImageDimensions
+    # REQ-14: the inference resolution the pixel-space homography points
+    # below were picked against. Must match `Config.source.resolution_cap`
+    # once `calib compile`/pipeline wiring cross-checks the two — a
+    # calibration authored against a different resolution than what
+    # `capture` actually delivers produces silently wrong table coordinates.
+    inference_resolution: Resolution
     camera: CameraIntrinsics
     distortion: DistortionCoefficients
     homography: HomographyCorrespondences

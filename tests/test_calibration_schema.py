@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from poker_vision.calibration.authoring import CalibrationAuthoring, load_calibration_authoring
 from poker_vision.calibration.runtime import CalibrationRuntime, load_calibration_runtime
+from poker_vision.config import Resolution
 
 VALID_SEATS: list[dict] = [
     {
@@ -76,7 +77,7 @@ VALID_DISTORTION: dict = {"k1": 0.01, "k2": -0.02, "p1": 0.0, "p2": 0.0, "k3": 0
 VALID_AUTHORING: dict = {
     "schema_version": "1.0",
     "table_id": "test_table",
-    "image": {"width": 1920, "height": 1080},
+    "inference_resolution": {"width": 1920, "height": 1080},
     "camera": VALID_CAMERA,
     "distortion": VALID_DISTORTION,
     "homography": {
@@ -98,7 +99,7 @@ VALID_RUNTIME: dict = {
     "schema_version": "1.0",
     "table_id": "test_table",
     "based_on": "calibration/instance.json",
-    "image": {"width": 1920, "height": 1080},
+    "inference_resolution": {"width": 1920, "height": 1080},
     "camera": VALID_CAMERA,
     "distortion": VALID_DISTORTION,
     "homography": {"forward": IDENTITY_MATRIX, "inverse": IDENTITY_MATRIX},
@@ -124,6 +125,21 @@ def test_valid_authoring_loads():
     assert len(calibration.seats) == 2
     assert calibration.seats[0].seat_id == "seat_1"
     assert calibration.table.unit.value == "mm"
+
+
+# REQ-14: a calibration explicitly references the inference resolution its
+# pixel-space homography/zones were authored against, via the same
+# `Resolution` type `Config.source.resolution_cap` uses.
+def test_authoring_inference_resolution_uses_shared_config_resolution_type():
+    calibration = CalibrationAuthoring.model_validate(VALID_AUTHORING)
+    assert calibration.inference_resolution == Resolution(width=1920, height=1080)
+
+
+def test_authoring_missing_inference_resolution_rejected():
+    payload = json.loads(json.dumps(VALID_AUTHORING))
+    del payload["inference_resolution"]
+    with pytest.raises(ValidationError):
+        CalibrationAuthoring.model_validate(payload)
 
 
 # AC-3: wrong schema_version fails
@@ -208,6 +224,20 @@ def test_valid_runtime_loads():
     assert calibration.schema_version == "1.0"
     assert calibration.homography.forward == IDENTITY_MATRIX
     assert calibration.homography.inverse == IDENTITY_MATRIX
+
+
+# REQ-14: same explicit inference-resolution reference on the compiled
+# runtime schema, carried over unchanged from CalibrationAuthoring.
+def test_runtime_inference_resolution_uses_shared_config_resolution_type():
+    calibration = CalibrationRuntime.model_validate(VALID_RUNTIME)
+    assert calibration.inference_resolution == Resolution(width=1920, height=1080)
+
+
+def test_runtime_missing_inference_resolution_rejected():
+    payload = json.loads(json.dumps(VALID_RUNTIME))
+    del payload["inference_resolution"]
+    with pytest.raises(ValidationError):
+        CalibrationRuntime.model_validate(payload)
 
 
 def test_runtime_wrong_schema_version_rejected():

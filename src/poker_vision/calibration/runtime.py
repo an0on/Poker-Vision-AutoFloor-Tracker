@@ -15,9 +15,10 @@ from typing import Literal
 from pydantic import Field, ValidationError
 
 from poker_vision.calibration.camera import CameraIntrinsics, DistortionCoefficients
-from poker_vision.calibration.geometry import ImageDimensions, TableDimensions
+from poker_vision.calibration.geometry import TableDimensions
 from poker_vision.calibration.homography import HomographyMatrix
 from poker_vision.calibration.zones import CalibrationGeometryModel
+from poker_vision.config import Resolution
 
 CALIBRATION_RUNTIME_SCHEMA_VERSION: Literal["1.0"] = "1.0"
 
@@ -28,7 +29,11 @@ class CalibrationRuntime(CalibrationGeometryModel):
     based_on: str = Field(
         min_length=1, description="Identifier/path of the source CalibrationAuthoring"
     )
-    image: ImageDimensions
+    # REQ-14: carried over from CalibrationAuthoring unchanged by `calib
+    # compile` — the inference resolution this calibration's pixel-space
+    # geometry was solved against, expected to match `Config.source.
+    # resolution_cap` at runtime.
+    inference_resolution: Resolution
     camera: CameraIntrinsics
     distortion: DistortionCoefficients
     homography: HomographyMatrix

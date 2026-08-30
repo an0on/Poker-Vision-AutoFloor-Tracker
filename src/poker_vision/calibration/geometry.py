@@ -179,13 +179,6 @@ class TableDimensions(StrictModel):
     unit: TableUnit
 
 
-class ImageDimensions(StrictModel):
-    """Pixel dimensions of the image a calibration was authored/compiled against."""
-
-    width: int = Field(gt=0)
-    height: int = Field(gt=0)
-
-
 def _check_3x3(value: list[list[float]]) -> list[list[float]]:
     if len(value) != 3 or any(len(row) != 3 for row in value):
         raise ValueError("expected a 3x3 matrix (3 rows of 3 floats)")
