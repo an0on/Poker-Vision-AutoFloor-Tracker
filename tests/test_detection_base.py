@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import cv2
 import numpy as np
 import pytest
 
@@ -172,6 +173,42 @@ def test_transform_box_to_table_handles_rotation():
     assert box.max.y == pytest.approx(10.0)
 
 
+def test_transform_box_to_table_bounds_curved_edges_from_distortion():
+    # Undistortion is nonlinear, so under real distortion a box's straight
+    # edges become curves and the true extremum can land strictly between
+    # two corners. A corners-only implementation misses that; sampling the
+    # edges (the fix) must not.
+    camera = CameraIntrinsics(fx=1000.0, fy=1000.0, cx=0.0, cy=0.0)
+    distortion = DistortionCoefficients(k1=-0.5)
+    identity = HomographyMatrix(
+        forward=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        inverse=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    )
+    box = (-400.0, 90.0, 400.0, 110.0)
+
+    result = transform_box_to_table(box, identity, camera, distortion)
+
+    # What a corners-only implementation would have produced, computed
+    # independently here (not by reaching into geometry.py's internals).
+    corners = np.array(
+        [[[-400.0, 90.0]], [[400.0, 90.0]], [[400.0, 110.0]], [[-400.0, 110.0]]],
+        dtype=np.float64,
+    )
+    camera_matrix = np.array(
+        [[camera.fx, 0.0, camera.cx], [0.0, camera.fy, camera.cy], [0.0, 0.0, 1.0]]
+    )
+    dist_coeffs = np.array(
+        [distortion.k1, distortion.k2, distortion.p1, distortion.p2, distortion.k3]
+    )
+    undistorted_corners = cv2.undistortPoints(corners, camera_matrix, dist_coeffs, P=camera_matrix)
+    corner_only_min_y = float(undistorted_corners[:, 0, 1].min())
+
+    # The sampled implementation finds a smaller (more negative-ward) y
+    # along an edge than any corner reaches -- exactly what corners-only
+    # sampling would miss.
+    assert result.min.y < corner_only_min_y - 5.0
+
+
 def test_apply_homography_to_point_rejects_horizon_point():
     # A real, invertible homography whose last row is [1, 0, 0]: at (0, 0)
     # the homogeneous w = 1*0 + 0*0 + 0 = 0, i.e. this specific point (not
@@ -183,6 +220,36 @@ def test_apply_homography_to_point_rejects_horizon_point():
         apply_homography_to_point(
             PixelPoint(x=0.0, y=0.0), homography, NEUTRAL_CAMERA, ZERO_DISTORTION
         )
+
+
+def test_apply_homography_to_point_accepts_tiny_but_valid_scale():
+    # HomographyMatrix only requires forward @ inverse == identity, which a
+    # uniformly-rescaled matrix pair still satisfies -- scaling forward by s
+    # and inverse by 1/s leaves their product unchanged. A pre-fix absolute
+    # threshold on the raw (unnormalised) w would reject this valid matrix
+    # for every ordinary point, since w is tiny for all of them here.
+    # Small enough that the pre-fix absolute threshold (1e-9 on the raw,
+    # unnormalised w) would have rejected this point (raw w = 1e-10 here);
+    # the fix's Frobenius-normalised w is ~0.044, comfortably above it.
+    scale = 1e-10
+    forward = [
+        [2.0 * scale, 0.0, 10.0 * scale],
+        [0.0, 3.0 * scale, 20.0 * scale],
+        [0.0, 0.0, scale],
+    ]
+    inverse = [
+        [0.5 / scale, 0.0, -5.0 / scale],
+        [0.0, (1.0 / 3.0) / scale, (-20.0 / 3.0) / scale],
+        [0.0, 0.0, 1.0 / scale],
+    ]
+    homography = HomographyMatrix(forward=forward, inverse=inverse)
+
+    result = apply_homography_to_point(
+        PixelPoint(x=10.0, y=10.0), homography, NEUTRAL_CAMERA, ZERO_DISTORTION
+    )
+
+    assert result.x == pytest.approx(30.0)
+    assert result.y == pytest.approx(50.0)
 
 
 def test_apply_homography_to_point_undistorts_before_transform():
