@@ -23,6 +23,14 @@ enqueues rather than gets lost -- the client may see one event twice
 (once folded into the snapshot, once replayed) but never a gap, which
 matches this adapter's job of never losing an event, not deduplicating a
 narrow startup race.
+
+Each connection's send loop also polls the ASGI receive channel (with the
+same short timeout used for the queue poll) purely to notice a disconnect
+promptly: this adapter never expects a client to send anything, but with
+no receive() call at all, a client that disconnects while its queue is
+empty would go unnoticed until some later `export()` happened to hit a
+failed send -- or forever, if none ever does -- leaving its handler
+coroutine and queue resident indefinitely.
 """
 
 from __future__ import annotations
@@ -79,9 +87,22 @@ class WebSocketEventExporter:
             await websocket.send_text(self._state_machine.snapshot().model_dump_json())
             while True:
                 try:
+                    inbound = await asyncio.wait_for(
+                        websocket.receive(), timeout=_QUEUE_POLL_INTERVAL_SECONDS
+                    )
+                except TimeoutError:
+                    pass
+                else:
+                    if inbound["type"] == "websocket.disconnect":
+                        break
+                    # This is a one-way push stream -- any other inbound
+                    # message (a client isn't expected to send one) is
+                    # simply ignored rather than treated as an error.
+                    continue
+
+                try:
                     message = client_queue.get_nowait()
                 except queue.Empty:
-                    await asyncio.sleep(_QUEUE_POLL_INTERVAL_SECONDS)
                     continue
                 await websocket.send_text(message)
         except WebSocketDisconnect:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 from fastapi.testclient import TestClient
 
@@ -113,6 +114,34 @@ def test_subsequent_events_match_jsonl_file_of_same_session(tmp_path):
     assert len(received) > 0
     for line in received:
         EventAdapter.validate_json(line)
+
+
+def test_idle_disconnect_is_cleaned_up_without_a_subsequent_export():
+    # A client that disconnects while idle (no events flowing) must not
+    # leave its queue resident in _connections forever -- the handler has
+    # to notice the disconnect itself, not rely on a later export() call
+    # hitting a failed send. `ws.close()` puts a "websocket.disconnect"
+    # message on the same ASGI receive channel a real client's disconnect
+    # would -- unlike leaving the `with` block, which additionally force-
+    # cancels the server-side handler task regardless of whether it was
+    # ever listening for that message, and so would mask a handler that
+    # never calls receive() at all.
+    machine = PipelineStateMachine(["seat_1"])
+    exporter = WebSocketEventExporter(machine)
+    client = TestClient(exporter.app)
+
+    with client.websocket_connect("/ws") as ws:
+        ws.receive_text()  # snapshot
+        assert len(exporter._connections) == 1
+
+        ws.close()
+
+        for _ in range(200):
+            if not exporter._connections:
+                break
+            time.sleep(0.01)
+
+        assert exporter._connections == []
 
 
 def test_export_with_no_connected_clients_does_not_raise():
