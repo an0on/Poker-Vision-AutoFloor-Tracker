@@ -21,10 +21,8 @@ in zone_reference_4032x3024.png.
 from __future__ import annotations
 
 import cv2
-import numpy as np
-from PIL import Image, ImageDraw, ImageFont
-
 from _aruco_markers import DICTIONARY_NAME, MARKER_LABELS
+from PIL import Image, ImageDraw, ImageFont
 
 OUT_PATH = "data/raw/images/aruco_markers_a4.png"
 

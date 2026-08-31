@@ -22,7 +22,6 @@ import argparse
 from pathlib import Path
 
 import cv2
-
 from _aruco_markers import DICTIONARY_NAME, MARKER_LABELS
 
 DEFAULT_OUT_DIR = Path("data/raw/markers/test_arbitrary")

@@ -104,7 +104,9 @@ def main() -> None:
             overlay = canvas.copy()
             cv2.fillPoly(overlay, pts_raw, color)
             cv2.addWeighted(overlay, 0.35, canvas, 0.65, 0, dst=canvas)
-        cv2.polylines(canvas, pts_raw, isClosed=True, color=color, thickness=thickness, lineType=cv2.LINE_AA)
+        cv2.polylines(
+            canvas, pts_raw, isClosed=True, color=color, thickness=thickness, lineType=cv2.LINE_AA
+        )
         if label:
             cx = int(pts_raw[0][:, 0].mean())
             cy = int(pts_raw[0][:, 1].mean())
@@ -142,7 +144,14 @@ def main() -> None:
         cv2.rectangle(canvas, (x, legend_y), (x + 50, legend_y + 50), color, -1)
         (tw, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1.3, 3)
         cv2.putText(
-            canvas, text, (x + 65, legend_y + 38), cv2.FONT_HERSHEY_SIMPLEX, 1.3, (40, 40, 40), 3, cv2.LINE_AA
+            canvas,
+            text,
+            (x + 65, legend_y + 38),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.3,
+            (40, 40, 40),
+            3,
+            cv2.LINE_AA,
         )
         x += 65 + tw + 60
 

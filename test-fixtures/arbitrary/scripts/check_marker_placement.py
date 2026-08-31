@@ -24,7 +24,7 @@ from poker_vision.calibration.geometry import TablePoint
 from poker_vision.calibration.runtime import CalibrationRuntime, load_calibration_runtime
 from poker_vision.calibration.topology import point_in_polygon
 from poker_vision.capture.frame import Frame
-from poker_vision.config import ArucoDetectionConfig, ArucoDictionary, load_config
+from poker_vision.config import load_config
 from poker_vision.detection.mock_aruco import MockArucoDetector
 from poker_vision.detection.models import Detection
 
