@@ -1,0 +1,48 @@
+{
+  "schema_version": "1.0",
+  "device": "cpu",
+  "detector": "mock",
+  "source": {
+    "type": "image_dir",
+    "path": "data/raw/images/test_arbitrary",
+    "resolution_cap": { "width": 1920, "height": 1080 }
+  },
+  "paths": {
+    "calibration_authoring": "test-fixtures/arbitrary/calibration/runtime/test_arbitrary_v1.json",
+    "calibration_runtime": "test-fixtures/arbitrary/calibration/runtime/test_arbitrary_v1.json",
+    "jsonl_export_dir": "data/exports/test_arbitrary",
+    "mock_script": null
+  },
+  "hysteresis": {
+    "n_on": 1,
+    "n_off": 1
+  },
+  "thresholds": {
+    "dealer_nearest_seat_max_distance": 250
+  },
+  "export": {
+    "jsonl": true,
+    "websocket": true,
+    "tournament_director": false
+  },
+  "debug": {
+    "enabled": true
+  },
+  "aruco": {
+    "dictionary": "DICT_4X4_50",
+    "marker_class_map": {
+      "0": "chip",
+      "1": "chip",
+      "2": "chip",
+      "3": "chip",
+      "4": "chip",
+      "5": "chip",
+      "10": "dealer_button",
+      "20": "card",
+      "21": "card",
+      "22": "card",
+      "23": "card",
+      "24": "card"
+    }
+  }
+}
