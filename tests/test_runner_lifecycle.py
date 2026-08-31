@@ -336,6 +336,54 @@ def test_run_capture_with_retry_keeps_frame_index_monotonic_across_reconnect(
     assert len(attempts) == 2
 
 
+def test_run_capture_with_retry_times_out_when_reconnects_only_ever_flicker(
+    tmp_path, monkeypatch
+):
+    # Codex review (REQ-45): a reconnect that delivers exactly one frame
+    # before failing again must not indefinitely reset the retry-timeout
+    # window just because *a* frame arrived -- otherwise a camera that
+    # flickers on for one frame per reconnect, forever, would never reach
+    # timeout_seconds and the fatal-abort path would never fire.
+    calibration, detector, tracker, hysteresis, state_machine, export_manager = _stages(
+        tmp_path, []
+    )
+    attempts: list[object] = []
+
+    def fake_create_capture(source):
+        attempts.append(source)
+        # Safety bound: if the window-reset fix regresses, this loop
+        # would otherwise retry forever (~2s here, at 0.01s backoff) --
+        # fail loudly with a distinct, unmistakable error instead of
+        # hanging the test run indefinitely.
+        if len(attempts) > 200:
+            raise AssertionError(
+                "retry loop did not respect timeout_seconds -- window-reset regression?"
+            )
+        return _ScriptedCapture([_frame(0), RuntimeError("flicker")])
+
+    monkeypatch.setattr("poker_vision.runner.lifecycle.create_capture", fake_create_capture)
+    # backoff_seconds sets the "must stay alive this long to count as
+    # recovered" bar (see `_CaptureHealthTracker.alive_duration()`); each
+    # flicker here lasts far less than that, so the window must never
+    # reset and timeout_seconds must eventually fire.
+    config = _continuity_config(backoff_seconds=0.01, timeout_seconds=0.05)
+    shutdown = ShutdownController()
+
+    with pytest.raises(ContinuityRetryExhausted):
+        _run_capture_with_retry(
+            config,
+            shutdown,
+            calibration,
+            detector,
+            tracker,
+            hysteresis,
+            state_machine,
+            export_manager,
+            None,
+        )
+    assert 2 <= len(attempts) <= 200
+
+
 def test_run_capture_with_retry_returns_shutdown_requested_when_signaled_during_backoff(
     tmp_path, monkeypatch
 ):

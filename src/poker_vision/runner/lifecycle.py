@@ -307,21 +307,36 @@ def _start_uvicorn_background(
 
 
 class _CaptureHealthTracker:
-    """Tracks whether the current `capture` attempt has delivered at least
-    one frame -- `_run_capture_with_retry`'s signal that a reconnect
-    actually succeeded (resetting the failure-timeout window) -- and, if
-    so, the highest (already globally-numbered, see `_OffsetCapture`)
-    `frame_index` it delivered, so the next reconnect attempt can keep
-    numbering frames from there.
+    """Tracks the current `capture` attempt's health for two *separate*
+    purposes `_run_capture_with_retry` must not conflate (Codex review):
+
+    - `last_frame_index`, whenever `frame_seen`, so the next reconnect
+      attempt can keep numbering frames from where this one left off
+      (`_OffsetCapture`) -- this must reflect *every* frame this attempt
+      actually delivered, no matter how briefly it lasted.
+    - `alive_duration()`, this attempt's wall-clock age, as the signal for
+      whether it's trustworthy enough to reset the failure-timeout
+      window. A single frame delivered right before failing again isn't
+      "recovered" -- a camera that flickers on for one frame per
+      reconnect, forever, would otherwise reset the window every time and
+      never reach `timeout_seconds`, defeating its entire purpose.
+      `_run_capture_with_retry` only resets the window once this attempt
+      has stayed alive for at least `retry_config.backoff_seconds` --
+      long enough to be a real reconnect, not a flicker -- reusing that
+      existing config value rather than adding a new one.
     """
 
     def __init__(self) -> None:
         self.frame_seen = False
         self.last_frame_index: int | None = None
+        self._started_at = time.monotonic()
 
     def mark(self, context: FrameContext) -> None:
         self.frame_seen = True
         self.last_frame_index = context.frame_id
+
+    def alive_duration(self) -> float:
+        return time.monotonic() - self._started_at
 
 
 @dataclass
@@ -506,8 +521,14 @@ def _run_capture_with_retry(
                 if not is_continuity:
                     raise
                 if health.frame_seen:
-                    window.reset()
+                    # Frame numbering must reflect every frame this
+                    # attempt delivered, however briefly it lasted --
+                    # unlike the window reset just below, this is not
+                    # conditional on "trustworthy" (Codex review; see
+                    # `_CaptureHealthTracker`'s own docstring).
                     next_frame_index_offset = health.last_frame_index + 1
+                    if health.alive_duration() >= retry_config.backoff_seconds:
+                        window.reset()
                 if _handle_continuity_failure(exc, window, retry_config, shutdown, context="read"):
                     continue
                 if shutdown.requested():
