@@ -10,8 +10,13 @@ per the error policy in CLAUDE.md's "Pipeline-Runner" section:
   the loop aborts (`FatalPipelineError`). A single successful frame resets
   that counter.
 - `export` is isolated by `ExportManager` itself and never raises here;
-  `debug` is best-effort and wrapped in its own try/except so a rendering
-  failure never touches the loop.
+  `debug` is best-effort and wrapped in its own try/except so a publish
+  failure never touches the loop. Per REQ-46, "debug" here means
+  publishing the frame + this frame's tracks/assignments/state into a
+  `LatestFrameHub` (`debug/frame_hub.py`) -- never rendering: overlay
+  rendering happens on demand, per connected MJPEG client, entirely
+  inside `debug.mjpeg.MjpegDebugServer._stream()`, which this module
+  neither calls nor imports.
 - Calibration is not loaded here at all -- REQ-45's lifecycle loads and
   validates it once, fail-fast, before ever constructing a `FrameLoop`;
   this module only ever *applies* the already-validated
@@ -49,7 +54,7 @@ from poker_vision.calibration.runtime import CalibrationRuntime
 from poker_vision.capture.base import Capture
 from poker_vision.capture.frame import Frame
 from poker_vision.config import RunnerConfig
-from poker_vision.debug.mjpeg import MjpegDebugServer
+from poker_vision.debug.frame_hub import DebugSnapshot, LatestFrameHub
 from poker_vision.detection.base import Detector
 from poker_vision.export.manager import ExportManager
 from poker_vision.runner.context import FrameContext
@@ -107,7 +112,7 @@ class FrameLoop:
         dealer_nearest_seat_max_distance: float,
         state_machine: PipelineStateMachine,
         export_manager: ExportManager,
-        debug_server: MjpegDebugServer | None = None,
+        frame_hub: LatestFrameHub | None = None,
         max_consecutive_core_errors: int = _DEFAULT_MAX_CONSECUTIVE_CORE_ERRORS,
         on_frame_processed: Callable[[FrameContext], None] | None = None,
     ) -> None:
@@ -119,7 +124,7 @@ class FrameLoop:
         self._dealer_nearest_seat_max_distance = dealer_nearest_seat_max_distance
         self._state_machine = state_machine
         self._export_manager = export_manager
-        self._debug_server = debug_server
+        self._frame_hub = frame_hub
         self._max_consecutive_core_errors = max_consecutive_core_errors
         self._on_frame_processed = on_frame_processed
         self._consecutive_core_errors = 0
@@ -179,11 +184,18 @@ class FrameLoop:
         # never raises itself (REQ-37a) -- nothing to catch here.
         self._export_manager.export(context.events)
 
-        if self._debug_server is not None:
+        if self._frame_hub is not None:
             try:
-                self._debug_server.update_frame(frame, context.tracks, context.assignments)
+                self._frame_hub.publish(
+                    frame,
+                    DebugSnapshot(
+                        tracked_frame=context.tracks,
+                        frame_assignments=context.assignments,
+                        state_snapshot=context.state_snapshot,
+                    ),
+                )
             except Exception:
-                logger.exception("frame %d: debug overlay update failed", frame.frame_index)
+                logger.exception("frame %d: debug frame-hub publish failed", frame.frame_index)
 
         self._notify(context)
         return context

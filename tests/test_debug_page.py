@@ -12,8 +12,8 @@ from poker_vision.calibration.homography import HomographyMatrix
 from poker_vision.calibration.runtime import CalibrationRuntime
 from poker_vision.calibration.zones import CalibrationSeat, GlobalZones, SeatZones
 from poker_vision.config import Config, Resolution
+from poker_vision.debug.frame_hub import LatestFrameHub
 from poker_vision.debug.mjpeg import MjpegDebugServer, build_debug_server
-from poker_vision.state.machine import PipelineStateMachine
 
 _IDENTITY = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
 
@@ -48,8 +48,7 @@ def _calibration() -> CalibrationRuntime:
 
 
 def _server(websocket_port: int = 8765) -> MjpegDebugServer:
-    machine = PipelineStateMachine(["seat_1"])
-    return MjpegDebugServer(_calibration(), machine, websocket_port=websocket_port)
+    return MjpegDebugServer(_calibration(), LatestFrameHub(), websocket_port=websocket_port)
 
 
 def _config(*, debug_enabled: bool = True, websocket_port: int = 8765) -> Config:
@@ -111,8 +110,7 @@ def test_different_servers_bake_in_their_own_websocket_port():
 
 
 def test_build_debug_server_wires_config_websocket_port_into_the_page():
-    machine = PipelineStateMachine(["seat_1"])
-    server = build_debug_server(_config(websocket_port=4242), _calibration(), machine)
+    server = build_debug_server(_config(websocket_port=4242), _calibration())
     assert server is not None
     client = TestClient(server.app)
 
@@ -122,8 +120,7 @@ def test_build_debug_server_wires_config_websocket_port_into_the_page():
 
 
 def test_build_debug_server_returns_none_when_disabled_no_page_either():
-    machine = PipelineStateMachine(["seat_1"])
-    server = build_debug_server(_config(debug_enabled=False), _calibration(), machine)
+    server = build_debug_server(_config(debug_enabled=False), _calibration())
     assert server is None
 
 
