@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import signal
+import socket
 import threading
 import time
 from datetime import UTC, datetime
@@ -46,6 +47,7 @@ from poker_vision.runner.lifecycle import (
     _handle_continuity_failure,
     _RetryWindow,
     _run_capture_with_retry,
+    _start_uvicorn_background,
     run_command,
     validate_command,
 )
@@ -783,6 +785,53 @@ def test_run_command_ambiguous_detector_mode_returns_config_error(tmp_path):
     config_path.write_text(json.dumps(config))
 
     assert run_command(config_path) == EXIT_CONFIG_ERROR
+
+
+def test_run_command_missing_mock_script_returns_config_error(tmp_path):
+    # Codex review (REQ-45): MockDetector raises OSError (FileNotFoundError)
+    # for a missing paths.mock_script -- run must classify it the same way
+    # validate already does (EXIT_CONFIG_ERROR), not fall through to the
+    # CLI's generic "unexpected error" catch-all.
+    config_path, _ = _valid_setup(tmp_path)
+    config = json.loads(config_path.read_text())
+    config["paths"]["mock_script"] = str(tmp_path / "does_not_exist.jsonl")
+    config_path.write_text(json.dumps(config))
+
+    assert run_command(config_path) == EXIT_CONFIG_ERROR
+
+
+def test_start_uvicorn_background_raises_when_port_already_in_use():
+    # Codex review (REQ-45): a caller must be told when the server didn't
+    # actually bind, not get a handle back regardless.
+    from fastapi import FastAPI
+
+    blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    blocker.bind(("127.0.0.1", 0))
+    blocker.listen(1)
+    port = blocker.getsockname()[1]
+    try:
+        with pytest.raises(RuntimeError, match="did not start"):
+            _start_uvicorn_background(FastAPI(), "127.0.0.1", port)
+    finally:
+        blocker.close()
+
+
+def test_run_command_continues_without_debug_server_if_it_fails_to_start(tmp_path, monkeypatch):
+    # Codex review (REQ-45): `debug` is best-effort -- a startup failure
+    # (e.g. ports.mjpeg already in use) must not abort an otherwise-healthy
+    # pipeline, just run without it (loudly logged, checked separately).
+    config_path, export_dir = _valid_setup(tmp_path)
+    config = json.loads(config_path.read_text())
+    config["debug"] = {"enabled": True}
+    config_path.write_text(json.dumps(config))
+
+    def fake_start(app, host, port):
+        raise RuntimeError("port in use")
+
+    monkeypatch.setattr("poker_vision.runner.lifecycle._start_uvicorn_background", fake_start)
+
+    assert run_command(config_path) == EXIT_OK
+    assert len(list(export_dir.glob("*.jsonl"))) == 1
 
 
 def test_run_command_missing_capture_source_returns_pipeline_error(tmp_path):

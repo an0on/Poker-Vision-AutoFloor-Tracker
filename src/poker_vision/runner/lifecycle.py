@@ -228,9 +228,34 @@ class _ServerHandle:
         self.thread.join(timeout=timeout)
 
 
+def _run_uvicorn_quietly(server: uvicorn.Server) -> None:
+    """`server.run()`, swallowing the `SystemExit` uvicorn itself raises on
+    a startup failure (e.g. the port is already in use) -- the caller
+    already detects and reports that failure via `_start_uvicorn_background`
+    checking `server.started`; without this, the same failure would *also*
+    surface as a scary, redundant "unhandled exception in thread"
+    traceback on stderr.
+    """
+    try:
+        server.run()
+    except SystemExit:
+        pass
+
+
 def _start_uvicorn_background(app: FastAPI, host: str, port: int) -> _ServerHandle:
+    """Start `app` on its own background uvicorn thread, blocking until it
+    has actually bound its socket (or failed to).
+
+    Raises `RuntimeError` if the server isn't listening within the
+    deadline -- e.g. `port` already in use (uvicorn's own thread exits
+    early) or startup simply hanging (Codex review: silently returning a
+    handle either way would let a caller believe an endpoint is open when
+    it isn't).
+    """
     server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning"))
-    thread = threading.Thread(target=server.run, name=f"uvicorn-{port}", daemon=True)
+    thread = threading.Thread(
+        target=_run_uvicorn_quietly, args=(server,), name=f"uvicorn-{port}", daemon=True
+    )
     thread.start()
     # Block briefly until the server has actually bound its socket, so a
     # caller that immediately starts driving the pipeline doesn't race a
@@ -238,6 +263,9 @@ def _start_uvicorn_background(app: FastAPI, host: str, port: int) -> _ServerHand
     deadline = time.monotonic() + 5.0
     while not server.started and thread.is_alive() and time.monotonic() < deadline:
         time.sleep(0.01)
+    if not server.started:
+        thread.join(timeout=5.0)
+        raise RuntimeError(f"server on {host}:{port} did not start (port in use, or timed out)")
     return _ServerHandle(server, thread)
 
 
@@ -544,13 +572,33 @@ def run_command(config_path: str | Path) -> int:
         detector, tracker, hysteresis, state_machine, export_manager, debug_server = (
             _build_stages(config, calibration)
         )
-    except ValueError as exc:
+    except (ValueError, OSError) as exc:
+        # `OSError` included: e.g. Modus A's `MockDetector` raises it for a
+        # missing/unreadable `paths.mock_script` -- the same kind of
+        # "invalid config" `validate_command` already classifies this way
+        # via the same `create_detector()` call (Codex review).
         logger.error("config invalid: %s", exc)
         return EXIT_CONFIG_ERROR
 
     debug_handle: _ServerHandle | None = None
     if debug_server is not None:
-        debug_handle = _start_uvicorn_background(debug_server.app, "0.0.0.0", config.ports.mjpeg)
+        try:
+            debug_handle = _start_uvicorn_background(
+                debug_server.app, "0.0.0.0", config.ports.mjpeg
+            )
+        except RuntimeError as exc:
+            # `debug` is best-effort (CLAUDE.md's Fehlerpolitik: a
+            # rendering/publish failure never stops the loop) -- extended
+            # here to a startup failure too (e.g. `ports.mjpeg` already in
+            # use): log it loudly (Codex review: it must not be silent)
+            # and run without it rather than aborting an otherwise-healthy
+            # pipeline over a debugging convenience endpoint.
+            logger.error(
+                "debug server failed to start on port %d (%s); running without it",
+                config.ports.mjpeg,
+                exc,
+            )
+            debug_server = None
 
     shutdown = ShutdownController()
     shutdown.install()
