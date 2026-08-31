@@ -189,6 +189,31 @@ def test_run_returns_eof_when_image_dir_is_exhausted(tmp_path):
     assert loop.run() == LoopExitReason.EOF
 
 
+# --- REQ-45: should_stop lets a shutdown request stop the loop between frames -
+
+
+def test_run_stops_after_the_current_frame_when_should_stop_becomes_true(tmp_path):
+    script_lines = [_chip_entry(i, 20.0, 20.0) for i in range(5)]
+    processed: list[int] = []
+    loop, _machine, _tracker, _calib = _build_loop(
+        tmp_path,
+        script_lines,
+        image_count=5,
+        on_frame_processed=lambda ctx: processed.append(ctx.frame_id),
+    )
+
+    # Stop once frame 1 has been processed -- before EOF (frame 4).
+    reason = loop.run(should_stop=lambda: len(processed) >= 2)
+
+    assert reason == LoopExitReason.SHUTDOWN_REQUESTED
+    assert processed == [0, 1]
+
+
+def test_run_reaches_eof_when_should_stop_never_becomes_true(tmp_path):
+    loop, _machine, _tracker, _calib = _build_loop(tmp_path, [], image_count=2)
+    assert loop.run(should_stop=lambda: False) == LoopExitReason.EOF
+
+
 # --- core-chain exception discards the whole frame, no partial update ------
 
 

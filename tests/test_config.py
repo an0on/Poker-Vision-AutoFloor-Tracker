@@ -204,3 +204,42 @@ def test_load_config_schema_violation_raises(tmp_path):
     config_path.write_text(json.dumps(_config(device="cuda")))
     with pytest.raises(ValueError, match="invalid config"):
         load_config(config_path)
+
+
+# REQ-45: a missing/unreadable config file is a clean `ValueError`, the
+# same as malformed JSON or a schema violation above -- not an unhandled
+# `FileNotFoundError` -- so the CLI can map every "invalid config" case to
+# the same exit code without special-casing which check failed.
+def test_load_config_missing_file_raises_value_error(tmp_path):
+    with pytest.raises(ValueError, match="could not be read"):
+        load_config(tmp_path / "does_not_exist.json")
+
+
+# REQ-45: `source.continuity_retry` -- backoff/timeout for a live
+# `continuity` capture failure.
+def test_continuity_retry_defaults():
+    config = Config.model_validate(VALID_CONFIG)
+    assert config.source.continuity_retry.backoff_seconds == 2.0
+    assert config.source.continuity_retry.timeout_seconds == 30.0
+
+
+def test_continuity_retry_overridable():
+    payload = _config(
+        source={
+            "type": "image_dir",
+            "path": "data/raw/images",
+            "continuity_retry": {"backoff_seconds": 1.5, "timeout_seconds": 45.0},
+        }
+    )
+    config = Config.model_validate(payload)
+    assert config.source.continuity_retry.backoff_seconds == 1.5
+    assert config.source.continuity_retry.timeout_seconds == 45.0
+
+
+@pytest.mark.parametrize("field", ["backoff_seconds", "timeout_seconds"])
+def test_continuity_retry_fields_must_be_positive(field):
+    payload = _config(
+        source={"type": "image_dir", "path": "data/raw/images", "continuity_retry": {field: 0}}
+    )
+    with pytest.raises(ValidationError):
+        Config.model_validate(payload)

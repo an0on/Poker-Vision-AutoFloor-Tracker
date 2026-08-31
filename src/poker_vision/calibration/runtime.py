@@ -41,10 +41,17 @@ class CalibrationRuntime(CalibrationGeometryModel):
 
 
 def load_calibration_runtime(path: str | Path) -> CalibrationRuntime:
-    """Load and validate a CalibrationRuntime from a JSON file. Raises on any schema violation."""
+    """Load and validate a CalibrationRuntime from a JSON file. Raises
+    `ValueError` on any problem -- a missing/unreadable file included, so
+    REQ-45's CLI can treat every "invalid calibration" case the same way
+    (clean message, exit != 0) without needing to know which failed
+    underneath.
+    """
     calibration_path = Path(path)
     try:
         raw = json.loads(calibration_path.read_text())
+    except OSError as exc:
+        raise ValueError(f"{calibration_path}: could not be read ({exc})") from exc
     except json.JSONDecodeError as exc:
         raise ValueError(f"{calibration_path}: not valid JSON ({exc})") from exc
     try:
