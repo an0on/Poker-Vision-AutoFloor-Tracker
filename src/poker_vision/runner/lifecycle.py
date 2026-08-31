@@ -65,6 +65,7 @@ from poker_vision.debug.mjpeg import MjpegDebugServer, build_debug_server
 from poker_vision.detection.base import Detector
 from poker_vision.detection.factory import create_detector
 from poker_vision.export.manager import ExportManager, build_exporters
+from poker_vision.export.websocket import WebSocketEventExporter
 from poker_vision.runner.context import FrameContext
 from poker_vision.runner.loop import FatalPipelineError, FrameLoop, LoopExitReason
 from poker_vision.state.machine import PipelineStateMachine
@@ -318,18 +319,33 @@ class _OffsetCapture:
 class _RetryWindow:
     """Tracks how long continuity capture failures have persisted
     *continuously* (REQ-45: bound one outage, not cumulative downtime --
-    see `ContinuityRetryConfig`'s docstring)."""
+    see `ContinuityRetryConfig`'s docstring).
+
+    `record_failure()` and `is_exhausted()` are separate (not one
+    combined call) so `_handle_continuity_failure` can check exhaustion
+    both *before* and *after* its backoff sleep against the same
+    `started_at` -- otherwise a `backoff_seconds` close to or larger than
+    `timeout_seconds` could push the total outage past the timeout
+    without either check ever actually seeing it (Codex review): the
+    pre-sleep check always fires too early (elapsed is still ~0 right
+    after the first failure) to catch it, and if the reconnect
+    immediately following the sleep happens to succeed, no *further*
+    failure ever triggers a fresh check either.
+    """
 
     started_at: float | None = None
 
     def reset(self) -> None:
         self.started_at = None
 
-    def record_failure_and_check_exhausted(self, timeout_seconds: float) -> bool:
-        now = time.monotonic()
+    def record_failure(self) -> None:
         if self.started_at is None:
-            self.started_at = now
-        return (now - self.started_at) >= timeout_seconds
+            self.started_at = time.monotonic()
+
+    def is_exhausted(self, timeout_seconds: float) -> bool:
+        if self.started_at is None:
+            return False
+        return (time.monotonic() - self.started_at) >= timeout_seconds
 
 
 def _run_capture_with_retry(
@@ -475,8 +491,8 @@ def _handle_continuity_failure(
     backoff -- once shutdown has been requested, so a SIGINT/SIGTERM
     during a retry backoff doesn't delay the process exit.
     """
-    exhausted = window.record_failure_and_check_exhausted(retry_config.timeout_seconds)
-    if exhausted or shutdown.requested():
+    window.record_failure()
+    if window.is_exhausted(retry_config.timeout_seconds) or shutdown.requested():
         return False
     logger.warning(
         "continuity capture %s failed (%s); retrying in %.1fs",
@@ -485,7 +501,13 @@ def _handle_continuity_failure(
         retry_config.backoff_seconds,
     )
     shutdown.wait(retry_config.backoff_seconds)
-    return not shutdown.requested()
+    if shutdown.requested():
+        return False
+    # Recheck (Codex review): the backoff sleep itself can push the total
+    # outage past the timeout even when the pre-sleep check hadn't yet --
+    # see `_RetryWindow`'s own docstring for why this can't be caught any
+    # other way.
+    return not window.is_exhausted(retry_config.timeout_seconds)
 
 
 _Stages = tuple[
@@ -600,6 +622,31 @@ def run_command(config_path: str | Path) -> int:
             )
             debug_server = None
 
+    # `build_exporters()` (REQ-37a) constructs a `WebSocketEventExporter`
+    # when `export.websocket` is enabled, but constructing it doesn't
+    # serve its FastAPI app anywhere -- that's this lifecycle's job,
+    # exactly like the debug server above (Codex review: without this,
+    # nothing ever listens on `ports.websocket`, so REQ-35's /ws, /status,
+    # /health are all unreachable despite the adapter being "enabled").
+    websocket_exporter = next(
+        (e for e in export_manager.exporters if isinstance(e, WebSocketEventExporter)), None
+    )
+    websocket_handle: _ServerHandle | None = None
+    if websocket_exporter is not None:
+        try:
+            websocket_handle = _start_uvicorn_background(
+                websocket_exporter.app, "0.0.0.0", config.ports.websocket
+            )
+        except RuntimeError as exc:
+            # Same best-effort philosophy as every other export adapter
+            # (REQ-37a: "Ausfall eines Adapters stoppt die Pipeline
+            # nicht"), extended to this adapter's startup phase too.
+            logger.error(
+                "websocket export server failed to start on port %d (%s); running without it",
+                config.ports.websocket,
+                exc,
+            )
+
     shutdown = ShutdownController()
     shutdown.install()
     try:
@@ -632,3 +679,5 @@ def run_command(config_path: str | Path) -> int:
         export_manager.close()
         if debug_handle is not None:
             debug_handle.stop()
+        if websocket_handle is not None:
+            websocket_handle.stop()

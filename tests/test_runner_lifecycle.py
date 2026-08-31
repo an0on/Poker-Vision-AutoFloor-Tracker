@@ -234,6 +234,20 @@ def test_retry_window_reset_extends_the_effective_budget():
     assert _handle_continuity_failure(RuntimeError("x"), window, retry_config, shutdown, "read")
 
 
+def test_handle_continuity_failure_rechecks_timeout_after_a_longer_backoff():
+    # Codex review (REQ-45): backoff_seconds > timeout_seconds must still
+    # give up once the backoff sleep itself has pushed the outage past the
+    # timeout -- the pre-sleep check alone (elapsed ~0 right after the
+    # first failure) can never catch this on its own.
+    retry_config = ContinuityRetryConfig(backoff_seconds=0.05, timeout_seconds=0.01)
+    shutdown = ShutdownController()
+    window = _RetryWindow()
+
+    assert not _handle_continuity_failure(
+        RuntimeError("x"), window, retry_config, shutdown, "read"
+    )
+
+
 def test_handle_continuity_failure_gives_up_immediately_when_shutdown_requested():
     retry_config = ContinuityRetryConfig(backoff_seconds=10.0, timeout_seconds=10.0)
     shutdown = ShutdownController()
@@ -758,6 +772,31 @@ def test_run_command_full_pipeline_succeeds_and_exports(tmp_path):
     lines = files[0].read_text().splitlines()
     assert len(lines) == 1
     assert json.loads(lines[0])["event_type"] == "seat_occupied"
+
+
+def test_run_command_starts_the_websocket_export_server_when_enabled(tmp_path, monkeypatch):
+    # Codex review (REQ-45): `build_exporters()` constructs a
+    # `WebSocketEventExporter` whenever `export.websocket` is enabled
+    # (the default -- `_valid_setup`'s config doesn't set it explicitly),
+    # but constructing it doesn't serve its FastAPI app anywhere on its
+    # own; the lifecycle must start it, the same way it starts the debug
+    # server.
+    config_path, _ = _valid_setup(tmp_path)
+    calls: list[tuple[object, str, int]] = []
+
+    class _FakeHandle:
+        def stop(self, timeout: float = 5.0) -> None:
+            pass
+
+    def fake_start(app, host, port):
+        calls.append((app, host, port))
+        return _FakeHandle()
+
+    monkeypatch.setattr("poker_vision.runner.lifecycle._start_uvicorn_background", fake_start)
+
+    assert run_command(config_path) == EXIT_OK
+    started_apps = [(host, port) for _app, host, port in calls]
+    assert ("0.0.0.0", 8765) in started_apps  # Config.ports.websocket's default
 
 
 def test_run_command_invalid_config_returns_config_error(tmp_path):
