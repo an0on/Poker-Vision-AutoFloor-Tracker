@@ -49,7 +49,7 @@ import signal
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import FrameType
 
@@ -59,6 +59,7 @@ from fastapi import FastAPI
 from poker_vision.calibration.runtime import CalibrationRuntime, load_calibration_runtime
 from poker_vision.capture import create_capture
 from poker_vision.capture.base import Capture
+from poker_vision.capture.frame import Frame
 from poker_vision.config import Config, ContinuityRetryConfig, SourceType, load_config
 from poker_vision.debug.mjpeg import MjpegDebugServer, build_debug_server
 from poker_vision.detection.base import Detector
@@ -173,14 +174,46 @@ def _start_uvicorn_background(app: FastAPI, host: str, port: int) -> _ServerHand
 class _CaptureHealthTracker:
     """Tracks whether the current `capture` attempt has delivered at least
     one frame -- `_run_capture_with_retry`'s signal that a reconnect
-    actually succeeded, resetting the failure-timeout window.
+    actually succeeded (resetting the failure-timeout window) -- and, if
+    so, the highest (already globally-numbered, see `_OffsetCapture`)
+    `frame_index` it delivered, so the next reconnect attempt can keep
+    numbering frames from there.
     """
 
     def __init__(self) -> None:
         self.frame_seen = False
+        self.last_frame_index: int | None = None
 
-    def mark(self, _context: FrameContext) -> None:
+    def mark(self, context: FrameContext) -> None:
         self.frame_seen = True
+        self.last_frame_index = context.frame_id
+
+
+@dataclass
+class _OffsetCapture:
+    """Wraps a freshly (re)opened `Capture`, adding a fixed `offset` to
+    every yielded frame's `frame_index` -- see `_run_capture_with_retry`'s
+    docstring for why this is necessary across a `continuity` reconnect.
+    """
+
+    inner: Capture
+    offset: int
+
+    @property
+    def source_id(self) -> str:
+        return self.inner.source_id
+
+    def __iter__(self) -> _OffsetCapture:
+        return self
+
+    def __next__(self) -> Frame:
+        frame = next(self.inner)
+        if self.offset == 0:
+            return frame
+        return replace(frame, frame_index=frame.frame_index + self.offset)
+
+    def close(self) -> None:
+        self.inner.close()
 
 
 @dataclass
@@ -229,25 +262,45 @@ def _run_capture_with_retry(
     failing -- is retried for `continuity` sources only, with backoff,
     until `source.continuity_retry.timeout_seconds` of *continuous*
     failure is reached (`ContinuityRetryExhausted`) or shutdown is
-    requested. `video_file`/`image_dir` never retry at all (REQ-15).
+    requested -- in which case this returns `LoopExitReason.
+    SHUTDOWN_REQUESTED` (a graceful stop, exit 0), not
+    `ContinuityRetryExhausted` (exit != 0): a SIGINT/SIGTERM landing
+    during a retry backoff is still a graceful shutdown request, same as
+    one landing between two frames. `video_file`/`image_dir` never retry
+    at all (REQ-15).
+
+    Every reconnected `ContinuityCapture` restarts its own `frame_index`
+    at 0 (see its own module docstring), but `HysteresisFilter`/
+    `PipelineStateMachine` -- kept alive across reconnects precisely so an
+    in-progress hand survives a camera hiccup -- both require a strictly
+    increasing `frame_index` from call to call. `_OffsetCapture` keeps the
+    numbering continuous across reconnects by adding a running offset
+    (the last globally-numbered frame index actually delivered, plus one)
+    to every frame from a freshly (re)opened capture.
     """
     is_continuity = config.source.type is SourceType.CONTINUITY
     retry_config = config.source.continuity_retry
     window = _RetryWindow()
     opened_before = False
+    next_frame_index_offset = 0
 
     while True:
         try:
-            capture: Capture = create_capture(config.source)
+            raw_capture: Capture = create_capture(config.source)
         except RuntimeError as exc:
             if not is_continuity or not opened_before:
                 raise
             if _handle_continuity_failure(exc, window, retry_config, shutdown, context="reopen"):
                 continue
+            if shutdown.requested():
+                return LoopExitReason.SHUTDOWN_REQUESTED
             raise ContinuityRetryExhausted(
                 f"continuity capture failed to reopen for >= {retry_config.timeout_seconds}s: {exc}"
             ) from exc
         opened_before = True
+        capture: Capture = (
+            _OffsetCapture(raw_capture, next_frame_index_offset) if is_continuity else raw_capture
+        )
 
         health = _CaptureHealthTracker()
         loop = FrameLoop(
@@ -272,8 +325,11 @@ def _run_capture_with_retry(
                 raise
             if health.frame_seen:
                 window.reset()
+                next_frame_index_offset = health.last_frame_index + 1
             if _handle_continuity_failure(exc, window, retry_config, shutdown, context="read"):
                 continue
+            if shutdown.requested():
+                return LoopExitReason.SHUTDOWN_REQUESTED
             raise ContinuityRetryExhausted(
                 f"continuity capture kept failing for >= {retry_config.timeout_seconds}s: {exc}"
             ) from exc

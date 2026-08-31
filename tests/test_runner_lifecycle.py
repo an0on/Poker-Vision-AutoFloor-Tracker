@@ -275,6 +275,87 @@ def test_run_capture_with_retry_reopens_after_a_read_failure(tmp_path, monkeypat
     assert len(attempts) == 2
 
 
+def test_run_capture_with_retry_keeps_frame_index_monotonic_across_reconnect(
+    tmp_path, monkeypatch
+):
+    # Codex review (REQ-45): a freshly (re)opened continuity capture always
+    # restarts its own frame_index at 0 -- without `_OffsetCapture`, the
+    # reconnected capture's first frame (raw index 0) would be <= the last
+    # index the (long-lived) HysteresisFilter already saw, which is a hard
+    # error there, not a retryable one -- so the retry would defeat itself.
+    calibration, detector, tracker, hysteresis, state_machine, export_manager = _stages(
+        tmp_path, [_chip_entry(i, 20.0, 20.0) for i in range(3)]
+    )
+    attempts: list[object] = []
+
+    def fake_create_capture(source):
+        attempts.append(source)
+        if len(attempts) == 1:
+            return _ScriptedCapture([_frame(0), _frame(1), RuntimeError("read failed")])
+        # Reconnected capture: raw frame_index restarts at 0 again.
+        return _ScriptedCapture([_frame(0)])
+
+    monkeypatch.setattr("poker_vision.runner.lifecycle.create_capture", fake_create_capture)
+    config = _continuity_config(backoff_seconds=0.01, timeout_seconds=2.0)
+    # Deliberately 1: if frame indices regressed, the very first
+    # post-reconnect frame would fail the core chain and immediately blow
+    # this threshold instead of running to EOF.
+    config.runner.max_consecutive_core_errors = 1
+    shutdown = ShutdownController()
+
+    reason = _run_capture_with_retry(
+        config,
+        shutdown,
+        calibration,
+        detector,
+        tracker,
+        hysteresis,
+        state_machine,
+        export_manager,
+        None,
+    )
+
+    assert reason == LoopExitReason.EOF
+    assert len(attempts) == 2
+
+
+def test_run_capture_with_retry_returns_shutdown_requested_when_signaled_during_backoff(
+    tmp_path, monkeypatch
+):
+    # Codex review (REQ-45): a SIGINT/SIGTERM landing during a retry
+    # backoff is still a graceful shutdown request (exit 0), not a
+    # ContinuityRetryExhausted abort (exit != 0).
+    calibration, detector, tracker, hysteresis, state_machine, export_manager = _stages(
+        tmp_path, []
+    )
+    shutdown = ShutdownController()
+
+    def fake_create_capture(source):
+        return _ScriptedCapture([RuntimeError("read failed")])
+
+    def fake_wait(self, timeout):
+        # Simulate a signal landing while backoff is "sleeping".
+        self._event.set()
+
+    monkeypatch.setattr("poker_vision.runner.lifecycle.create_capture", fake_create_capture)
+    monkeypatch.setattr("poker_vision.runner.lifecycle.ShutdownController.wait", fake_wait)
+    config = _continuity_config(backoff_seconds=10.0, timeout_seconds=30.0)
+
+    reason = _run_capture_with_retry(
+        config,
+        shutdown,
+        calibration,
+        detector,
+        tracker,
+        hysteresis,
+        state_machine,
+        export_manager,
+        None,
+    )
+
+    assert reason == LoopExitReason.SHUTDOWN_REQUESTED
+
+
 def test_run_capture_with_retry_never_retries_the_very_first_open_failure(tmp_path, monkeypatch):
     calibration, detector, tracker, hysteresis, state_machine, export_manager = _stages(
         tmp_path, []
