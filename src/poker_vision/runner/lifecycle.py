@@ -178,18 +178,26 @@ class _CaptureInterruptWatcher:
     requested in the narrow window between `create_capture()` returning
     and `set_current()` registering it (e.g. a slow-to-open device), in
     which case a one-shot watcher would already be gone and this new
-    capture would never get interrupted if it then blocked. Once shutdown
-    is set, `ShutdownController.wait_forever()` returns immediately on
-    every call, so the loop below polls `close_current()` on a short
-    interval instead of busy-spinning.
+    capture would never get interrupted if it then blocked.
+
+    `_run_capture_with_retry` must call `stop()` once it's done with this
+    watcher (win, lose, or draw), not just let it fall out of scope
+    (Codex review): a run that never sees shutdown at all (e.g. it ends
+    via `FatalPipelineError` or `ContinuityRetryExhausted`) would
+    otherwise leave this thread waiting forever, and a run that *does* see
+    shutdown would leave it re-polling forever -- harmless for a one-shot
+    CLI process (it's a daemon thread), but a real leak in any process
+    that calls `run_command()`/`_run_capture_with_retry()` more than
+    once (this project's own test suite included).
     """
 
-    _REARM_POLL_INTERVAL_SECONDS = 0.05
+    _POLL_INTERVAL_SECONDS = 0.05
 
     def __init__(self, shutdown: ShutdownController) -> None:
         self._shutdown = shutdown
         self._lock = threading.Lock()
         self._current: Capture | None = None
+        self._stop_watching = threading.Event()
         self._thread = threading.Thread(
             target=self._watch, name="capture-interrupt-watcher", daemon=True
         )
@@ -207,11 +215,27 @@ class _CaptureInterruptWatcher:
         if capture is not None:
             capture.close()
 
+    def stop(self, timeout: float = 5.0) -> None:
+        self._stop_watching.set()
+        self._thread.join(timeout=timeout)
+
     def _watch(self) -> None:
-        self._shutdown.wait_forever()
-        while True:
-            self.close_current()
-            time.sleep(self._REARM_POLL_INTERVAL_SECONDS)
+        while not self._stop_watching.is_set():
+            # Bounded wait (not `wait_forever()`) so this loop also wakes
+            # up to notice `_stop_watching` even if shutdown never fires
+            # at all.
+            if self._shutdown._event.wait(timeout=self._POLL_INTERVAL_SECONDS):
+                self.close_current()
+                # `Event.wait()` returns *immediately* (no delay at all)
+                # once the event is already set -- without sleeping here
+                # too, this becomes a tight, CPU-maxing busy loop for the
+                # entire time between shutdown firing and `stop()` being
+                # called (found by an unexplained 10x+ test-suite
+                # slowdown: this loop was calling `close_current()`
+                # millions of times a second). `_stop_watching.wait()`
+                # doubles as that delay and still lets `stop()` interrupt
+                # it promptly.
+                self._stop_watching.wait(timeout=self._POLL_INTERVAL_SECONDS)
 
 
 @dataclass
@@ -423,71 +447,85 @@ def _run_capture_with_retry(
         watcher = _CaptureInterruptWatcher(shutdown)
         watcher.start()
 
-    while True:
-        try:
-            raw_capture: Capture = create_capture(config.source)
-        except RuntimeError as exc:
-            if not is_continuity or not opened_before:
-                raise
-            if _handle_continuity_failure(exc, window, retry_config, shutdown, context="reopen"):
-                continue
-            if shutdown.requested():
-                return LoopExitReason.SHUTDOWN_REQUESTED
-            raise ContinuityRetryExhausted(
-                f"continuity capture failed to reopen for >= {retry_config.timeout_seconds}s: {exc}"
-            ) from exc
-        opened_before = True
-        capture: Capture = (
-            _OffsetCapture(raw_capture, next_frame_index_offset) if is_continuity else raw_capture
-        )
-        if watcher is not None:
-            watcher.set_current(capture)
-
-        health = _CaptureHealthTracker()
-        loop = FrameLoop(
-            capture=capture,
-            detector=detector,
-            tracker=tracker,
-            hysteresis=hysteresis,
-            calibration=calibration,
-            dealer_nearest_seat_max_distance=config.thresholds.dealer_nearest_seat_max_distance,
-            state_machine=state_machine,
-            export_manager=export_manager,
-            debug_server=debug_server,
-            max_consecutive_core_errors=config.runner.max_consecutive_core_errors,
-            on_frame_processed=health.mark,
-        )
-        try:
-            return loop.run(should_stop=shutdown.requested)
-        except FatalPipelineError:
-            raise
-        except Exception as exc:
-            # `ContinuityCapture`'s background reader thread republishes
-            # *any* exception from `cv2.VideoCapture.read()` or frame
-            # construction (see its module docstring's `except Exception`
-            # note), not only `RuntimeError` -- a bare `except RuntimeError`
-            # here would let e.g. a `cv2.error` bypass the retry policy
-            # entirely and get reported as an immediate pipeline failure
-            # (Codex review). `FatalPipelineError` is excluded above, and
-            # `not is_continuity` still re-raises immediately: `video_file`/
-            # `image_dir` never retry (REQ-15).
-            if not is_continuity:
-                raise
-            if health.frame_seen:
-                window.reset()
-                next_frame_index_offset = health.last_frame_index + 1
-            if _handle_continuity_failure(exc, window, retry_config, shutdown, context="read"):
-                continue
-            if shutdown.requested():
-                return LoopExitReason.SHUTDOWN_REQUESTED
-            raise ContinuityRetryExhausted(
-                f"continuity capture kept failing for >= {retry_config.timeout_seconds}s: {exc}"
-            ) from exc
-        finally:
+    try:
+        while True:
+            try:
+                raw_capture: Capture = create_capture(config.source)
+            except RuntimeError as exc:
+                if not is_continuity or not opened_before:
+                    raise
+                if _handle_continuity_failure(
+                    exc, window, retry_config, shutdown, context="reopen"
+                ):
+                    continue
+                if shutdown.requested():
+                    return LoopExitReason.SHUTDOWN_REQUESTED
+                raise ContinuityRetryExhausted(
+                    f"continuity capture failed to reopen for >= "
+                    f"{retry_config.timeout_seconds}s: {exc}"
+                ) from exc
+            opened_before = True
+            capture: Capture = (
+                _OffsetCapture(raw_capture, next_frame_index_offset)
+                if is_continuity
+                else raw_capture
+            )
             if watcher is not None:
-                watcher.close_current()
-            else:
-                capture.close()
+                watcher.set_current(capture)
+
+            health = _CaptureHealthTracker()
+            loop = FrameLoop(
+                capture=capture,
+                detector=detector,
+                tracker=tracker,
+                hysteresis=hysteresis,
+                calibration=calibration,
+                dealer_nearest_seat_max_distance=config.thresholds.dealer_nearest_seat_max_distance,
+                state_machine=state_machine,
+                export_manager=export_manager,
+                debug_server=debug_server,
+                max_consecutive_core_errors=config.runner.max_consecutive_core_errors,
+                on_frame_processed=health.mark,
+            )
+            try:
+                return loop.run(should_stop=shutdown.requested)
+            except FatalPipelineError:
+                raise
+            except Exception as exc:
+                # `ContinuityCapture`'s background reader thread
+                # republishes *any* exception from `cv2.VideoCapture.
+                # read()` or frame construction (see its module
+                # docstring's `except Exception` note), not only
+                # `RuntimeError` -- a bare `except RuntimeError` here
+                # would let e.g. a `cv2.error` bypass the retry policy
+                # entirely and get reported as an immediate pipeline
+                # failure (Codex review). `FatalPipelineError` is
+                # excluded above, and `not is_continuity` still re-raises
+                # immediately: `video_file`/`image_dir` never retry
+                # (REQ-15).
+                if not is_continuity:
+                    raise
+                if health.frame_seen:
+                    window.reset()
+                    next_frame_index_offset = health.last_frame_index + 1
+                if _handle_continuity_failure(exc, window, retry_config, shutdown, context="read"):
+                    continue
+                if shutdown.requested():
+                    return LoopExitReason.SHUTDOWN_REQUESTED
+                raise ContinuityRetryExhausted(
+                    f"continuity capture kept failing for >= {retry_config.timeout_seconds}s: {exc}"
+                ) from exc
+            finally:
+                if watcher is not None:
+                    watcher.close_current()
+                else:
+                    capture.close()
+    finally:
+        # Stop this watcher's thread regardless of how this function
+        # exits (Codex review) -- see `_CaptureInterruptWatcher`'s own
+        # docstring for why it would otherwise leak.
+        if watcher is not None:
+            watcher.stop()
 
 
 def _handle_continuity_failure(
@@ -704,10 +742,16 @@ def run_command(config_path: str | Path) -> int:
             logger.error("pipeline failed to start: %s", exc)
             return EXIT_PIPELINE_ERROR
     finally:
-        shutdown.restore()
+        # `shutdown.restore()` last (Codex review): as long as the custom
+        # handlers stay installed, a second SIGINT during this cleanup
+        # itself still takes the documented forced-abort path
+        # (`os._exit()`) instead of raising a `KeyboardInterrupt` that
+        # would abandon whatever cleanup was left (e.g. `debug_handle.
+        # stop()` already run but `websocket_handle.stop()` not yet).
         if export_manager is not None:
             export_manager.close()
         if debug_handle is not None:
             debug_handle.stop()
         if websocket_handle is not None:
             websocket_handle.stop()
+        shutdown.restore()

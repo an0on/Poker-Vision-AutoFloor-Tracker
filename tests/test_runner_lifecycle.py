@@ -451,18 +451,23 @@ def test_capture_interrupt_watcher_closes_a_capture_registered_after_shutdown():
     shutdown = ShutdownController()
     watcher = _CaptureInterruptWatcher(shutdown)
     watcher.start()
+    try:
+        shutdown._event.set()
+        time.sleep(0.02)  # let the watcher's first pass run and find nothing
 
-    shutdown._event.set()
-    time.sleep(0.02)  # let the watcher's first pass run and find nothing
+        capture = _ScriptedCapture([])
+        watcher.set_current(capture)
 
-    capture = _ScriptedCapture([])
-    watcher.set_current(capture)
+        deadline = time.monotonic() + 2.0
+        while not capture.closed and time.monotonic() < deadline:
+            time.sleep(0.01)
 
-    deadline = time.monotonic() + 2.0
-    while not capture.closed and time.monotonic() < deadline:
-        time.sleep(0.01)
-
-    assert capture.closed is True
+        assert capture.closed is True
+    finally:
+        # Without this, the watcher (shutdown already set) keeps
+        # re-polling forever -- a leaked, if now no longer CPU-hungry,
+        # background thread for the rest of the test session.
+        watcher.stop()
 
 
 def test_run_capture_with_retry_retries_non_runtime_error_read_failures(tmp_path, monkeypatch):
@@ -755,6 +760,14 @@ def _valid_setup(tmp_path: Path) -> tuple[Path, Path]:
             "mock_script": str(script),
         },
         "debug": {"enabled": False},
+        # Disabled by default for the same reason as debug above: most
+        # tests using this fixture don't care about a real websocket
+        # server, and letting every one of them bind the same default
+        # port (8765) back-to-back causes real (if usually harmless) OS
+        # port-reuse delays that made the suite noticeably slower.
+        # `test_run_command_starts_the_websocket_export_server_when_
+        # enabled` re-enables it explicitly.
+        "export": {"jsonl": True, "websocket": False, "tournament_director": False},
     }
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps(config))
@@ -802,12 +815,15 @@ def test_run_command_installs_signal_handlers_before_anything_else(tmp_path, mon
 
 def test_run_command_starts_the_websocket_export_server_when_enabled(tmp_path, monkeypatch):
     # Codex review (REQ-45): `build_exporters()` constructs a
-    # `WebSocketEventExporter` whenever `export.websocket` is enabled
-    # (the default -- `_valid_setup`'s config doesn't set it explicitly),
+    # `WebSocketEventExporter` whenever `export.websocket` is enabled,
     # but constructing it doesn't serve its FastAPI app anywhere on its
     # own; the lifecycle must start it, the same way it starts the debug
-    # server.
+    # server. `_start_uvicorn_background` is monkeypatched below, so this
+    # never binds a real port either.
     config_path, _ = _valid_setup(tmp_path)
+    config = json.loads(config_path.read_text())
+    config["export"]["websocket"] = True
+    config_path.write_text(json.dumps(config))
     calls: list[tuple[object, str, int]] = []
 
     class _FakeHandle:
