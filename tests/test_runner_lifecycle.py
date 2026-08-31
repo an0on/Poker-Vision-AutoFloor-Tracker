@@ -774,6 +774,32 @@ def test_run_command_full_pipeline_succeeds_and_exports(tmp_path):
     assert json.loads(lines[0])["event_type"] == "seat_occupied"
 
 
+def test_run_command_installs_signal_handlers_before_anything_else(tmp_path, monkeypatch):
+    # Codex review (REQ-45): if a SIGINT/SIGTERM lands before `shutdown.
+    # install()` runs, Python's default handler (KeyboardInterrupt) would
+    # bypass this function's cleanup entirely -- an already-started
+    # server left running, JsonlEventExporter's session file unflushed.
+    # `install()` must therefore be the very first thing `run_command`
+    # does, before even `load_config()`.
+    import poker_vision.runner.lifecycle as lifecycle_module
+
+    config_path, _ = _valid_setup(tmp_path)
+    original_handler = signal.getsignal(signal.SIGINT)
+    seen: dict[str, object] = {}
+    real_load_config = lifecycle_module.load_config
+
+    def spy_load_config(path):
+        seen["sigint_handler"] = signal.getsignal(signal.SIGINT)
+        return real_load_config(path)
+
+    monkeypatch.setattr(lifecycle_module, "load_config", spy_load_config)
+
+    run_command(config_path)
+
+    assert seen["sigint_handler"] != original_handler
+    assert signal.getsignal(signal.SIGINT) == original_handler
+
+
 def test_run_command_starts_the_websocket_export_server_when_enabled(tmp_path, monkeypatch):
     # Codex review (REQ-45): `build_exporters()` constructs a
     # `WebSocketEventExporter` whenever `export.websocket` is enabled
@@ -853,6 +879,36 @@ def test_start_uvicorn_background_raises_when_port_already_in_use():
             _start_uvicorn_background(FastAPI(), "127.0.0.1", port)
     finally:
         blocker.close()
+
+
+def test_start_uvicorn_background_requests_shutdown_when_startup_times_out(monkeypatch):
+    # Codex review (REQ-45): when the wait loop exits because the deadline
+    # passed (thread still alive, not because it already died), the
+    # server must still be told to stop before this function raises --
+    # otherwise a slow-to-bind server could go on to bind the port later,
+    # as an orphan nothing can stop anymore.
+    from fastapi import FastAPI
+
+    created: list[object] = []
+
+    class _NeverStartsServer:
+        def __init__(self, config):
+            self.started = False
+            self.should_exit = False
+            created.append(self)
+
+        def run(self):
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline and not self.should_exit:
+                time.sleep(0.01)
+
+    monkeypatch.setattr("poker_vision.runner.lifecycle.uvicorn.Server", _NeverStartsServer)
+
+    with pytest.raises(RuntimeError, match="did not start"):
+        _start_uvicorn_background(FastAPI(), "127.0.0.1", 0, startup_timeout=0.05)
+
+    assert len(created) == 1
+    assert created[0].should_exit is True
 
 
 def test_run_command_continues_without_debug_server_if_it_fails_to_start(tmp_path, monkeypatch):

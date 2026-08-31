@@ -243,15 +243,19 @@ def _run_uvicorn_quietly(server: uvicorn.Server) -> None:
         pass
 
 
-def _start_uvicorn_background(app: FastAPI, host: str, port: int) -> _ServerHandle:
+def _start_uvicorn_background(
+    app: FastAPI, host: str, port: int, startup_timeout: float = 5.0
+) -> _ServerHandle:
     """Start `app` on its own background uvicorn thread, blocking until it
     has actually bound its socket (or failed to).
 
-    Raises `RuntimeError` if the server isn't listening within the
-    deadline -- e.g. `port` already in use (uvicorn's own thread exits
-    early) or startup simply hanging (Codex review: silently returning a
-    handle either way would let a caller believe an endpoint is open when
-    it isn't).
+    Raises `RuntimeError` if the server isn't listening within
+    `startup_timeout` -- e.g. `port` already in use (uvicorn's own thread
+    exits early) or startup simply hanging (Codex review: silently
+    returning a handle either way would let a caller believe an endpoint
+    is open when it isn't). `startup_timeout` is a parameter (not a
+    module constant) mainly so tests can exercise the "still alive but
+    never starts" path without a real multi-second wait.
     """
     server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning"))
     thread = threading.Thread(
@@ -261,10 +265,18 @@ def _start_uvicorn_background(app: FastAPI, host: str, port: int) -> _ServerHand
     # Block briefly until the server has actually bound its socket, so a
     # caller that immediately starts driving the pipeline doesn't race a
     # client connecting before the port is open.
-    deadline = time.monotonic() + 5.0
+    deadline = time.monotonic() + startup_timeout
     while not server.started and thread.is_alive() and time.monotonic() < deadline:
         time.sleep(0.01)
     if not server.started:
+        # Codex review: if the loop above only exited because the
+        # deadline passed (not because the thread already died -- e.g. a
+        # slow bind still in progress), the server could otherwise go on
+        # to bind the port *after* this function has already raised and
+        # the only handle able to stop it is discarded -- an orphaned,
+        # now-unstoppable server. `should_exit` tells it to give up
+        # rather than continue starting.
+        server.should_exit = True
         thread.join(timeout=5.0)
         raise RuntimeError(f"server on {host}:{port} did not start (port in use, or timed out)")
     return _ServerHandle(server, thread)
@@ -577,106 +589,124 @@ def validate_command(config_path: str | Path) -> int:
 def run_command(config_path: str | Path) -> int:
     """`poker-vision run --config <path>`: start the pipeline and run it
     until EOF or a signal-driven shutdown, per this module's docstring.
+
+    Installs the signal handlers *before* doing anything else, including
+    config/calibration loading and starting either background server:
+    otherwise a SIGINT/SIGTERM landing in that window would hit Python's
+    default handler (`KeyboardInterrupt`, raised before `shutdown.
+    install()` ever runs) and escape this function's cleanup entirely --
+    an already-started server left running, an opened `JsonlEventExporter`
+    session file left unflushed (Codex review). The whole body below is
+    therefore one `try`/`finally`, tracking each resource in a variable
+    that starts `None` and is only used in `finally` once actually set, so
+    cleanup is safe no matter how early a failure or exit happens.
     """
-    try:
-        config = load_config(config_path)
-    except ValueError as exc:
-        logger.error("config invalid: %s", exc)
-        return EXIT_CONFIG_ERROR
-
-    try:
-        calibration = load_calibration_runtime(config.paths.calibration_runtime)
-    except ValueError as exc:
-        logger.error("calibration invalid: %s", exc)
-        return EXIT_CALIBRATION_ERROR
-
-    try:
-        detector, tracker, hysteresis, state_machine, export_manager, debug_server = (
-            _build_stages(config, calibration)
-        )
-    except (ValueError, OSError) as exc:
-        # `OSError` included: e.g. Modus A's `MockDetector` raises it for a
-        # missing/unreadable `paths.mock_script` -- the same kind of
-        # "invalid config" `validate_command` already classifies this way
-        # via the same `create_detector()` call (Codex review).
-        logger.error("config invalid: %s", exc)
-        return EXIT_CONFIG_ERROR
-
-    debug_handle: _ServerHandle | None = None
-    if debug_server is not None:
-        try:
-            debug_handle = _start_uvicorn_background(
-                debug_server.app, "0.0.0.0", config.ports.mjpeg
-            )
-        except RuntimeError as exc:
-            # `debug` is best-effort (CLAUDE.md's Fehlerpolitik: a
-            # rendering/publish failure never stops the loop) -- extended
-            # here to a startup failure too (e.g. `ports.mjpeg` already in
-            # use): log it loudly (Codex review: it must not be silent)
-            # and run without it rather than aborting an otherwise-healthy
-            # pipeline over a debugging convenience endpoint.
-            logger.error(
-                "debug server failed to start on port %d (%s); running without it",
-                config.ports.mjpeg,
-                exc,
-            )
-            debug_server = None
-
-    # `build_exporters()` (REQ-37a) constructs a `WebSocketEventExporter`
-    # when `export.websocket` is enabled, but constructing it doesn't
-    # serve its FastAPI app anywhere -- that's this lifecycle's job,
-    # exactly like the debug server above (Codex review: without this,
-    # nothing ever listens on `ports.websocket`, so REQ-35's /ws, /status,
-    # /health are all unreachable despite the adapter being "enabled").
-    websocket_exporter = next(
-        (e for e in export_manager.exporters if isinstance(e, WebSocketEventExporter)), None
-    )
-    websocket_handle: _ServerHandle | None = None
-    if websocket_exporter is not None:
-        try:
-            websocket_handle = _start_uvicorn_background(
-                websocket_exporter.app, "0.0.0.0", config.ports.websocket
-            )
-        except RuntimeError as exc:
-            # Same best-effort philosophy as every other export adapter
-            # (REQ-37a: "Ausfall eines Adapters stoppt die Pipeline
-            # nicht"), extended to this adapter's startup phase too.
-            logger.error(
-                "websocket export server failed to start on port %d (%s); running without it",
-                config.ports.websocket,
-                exc,
-            )
-
     shutdown = ShutdownController()
     shutdown.install()
+    export_manager: ExportManager | None = None
+    debug_handle: _ServerHandle | None = None
+    websocket_handle: _ServerHandle | None = None
     try:
-        reason = _run_capture_with_retry(
-            config,
-            shutdown,
-            calibration,
-            detector,
-            tracker,
-            hysteresis,
-            state_machine,
-            export_manager,
-            debug_server,
+        try:
+            config = load_config(config_path)
+        except ValueError as exc:
+            logger.error("config invalid: %s", exc)
+            return EXIT_CONFIG_ERROR
+
+        try:
+            calibration = load_calibration_runtime(config.paths.calibration_runtime)
+        except ValueError as exc:
+            logger.error("calibration invalid: %s", exc)
+            return EXIT_CALIBRATION_ERROR
+
+        try:
+            detector, tracker, hysteresis, state_machine, export_manager, debug_server = (
+                _build_stages(config, calibration)
+            )
+        except (ValueError, OSError) as exc:
+            # `OSError` included: e.g. Modus A's `MockDetector` raises it
+            # for a missing/unreadable `paths.mock_script` -- the same
+            # kind of "invalid config" `validate_command` already
+            # classifies this way via the same `create_detector()` call
+            # (Codex review).
+            logger.error("config invalid: %s", exc)
+            return EXIT_CONFIG_ERROR
+
+        if debug_server is not None:
+            try:
+                debug_handle = _start_uvicorn_background(
+                    debug_server.app, "0.0.0.0", config.ports.mjpeg
+                )
+            except RuntimeError as exc:
+                # `debug` is best-effort (CLAUDE.md's Fehlerpolitik: a
+                # rendering/publish failure never stops the loop) --
+                # extended here to a startup failure too (e.g.
+                # `ports.mjpeg` already in use): log it loudly (Codex
+                # review: it must not be silent) and run without it
+                # rather than aborting an otherwise-healthy pipeline over
+                # a debugging convenience endpoint.
+                logger.error(
+                    "debug server failed to start on port %d (%s); running without it",
+                    config.ports.mjpeg,
+                    exc,
+                )
+                debug_server = None
+
+        # `build_exporters()` (REQ-37a) constructs a `WebSocketEventExporter`
+        # when `export.websocket` is enabled, but constructing it doesn't
+        # serve its FastAPI app anywhere -- that's this lifecycle's job,
+        # exactly like the debug server above (Codex review: without
+        # this, nothing ever listens on `ports.websocket`, so REQ-35's
+        # /ws, /status, /health are all unreachable despite the adapter
+        # being "enabled").
+        websocket_exporter = next(
+            (e for e in export_manager.exporters if isinstance(e, WebSocketEventExporter)), None
         )
-        logger.info("pipeline stopped: %s", reason.value)
-        return EXIT_OK
-    except (FatalPipelineError, ContinuityRetryExhausted) as exc:
-        logger.error("pipeline aborted: %s", exc)
-        return EXIT_PIPELINE_ERROR
-    except (RuntimeError, OSError, ValueError) as exc:
-        # The very first capture-open failure (never retried -- see
-        # `_run_capture_with_retry`'s docstring): `RuntimeError` for
-        # `continuity` (REQ-16's "camera missing at startup"),
-        # `FileNotFoundError`/`ValueError` for `video_file`/`image_dir`
-        # (a missing file, an empty/unreadable directory).
-        logger.error("pipeline failed to start: %s", exc)
-        return EXIT_PIPELINE_ERROR
+        if websocket_exporter is not None:
+            try:
+                websocket_handle = _start_uvicorn_background(
+                    websocket_exporter.app, "0.0.0.0", config.ports.websocket
+                )
+            except RuntimeError as exc:
+                # Same best-effort philosophy as every other export
+                # adapter (REQ-37a: "Ausfall eines Adapters stoppt die
+                # Pipeline nicht"), extended to this adapter's startup
+                # phase too.
+                logger.error(
+                    "websocket export server failed to start on port %d (%s); running without it",
+                    config.ports.websocket,
+                    exc,
+                )
+
+        try:
+            reason = _run_capture_with_retry(
+                config,
+                shutdown,
+                calibration,
+                detector,
+                tracker,
+                hysteresis,
+                state_machine,
+                export_manager,
+                debug_server,
+            )
+            logger.info("pipeline stopped: %s", reason.value)
+            return EXIT_OK
+        except (FatalPipelineError, ContinuityRetryExhausted) as exc:
+            logger.error("pipeline aborted: %s", exc)
+            return EXIT_PIPELINE_ERROR
+        except (RuntimeError, OSError, ValueError) as exc:
+            # The very first capture-open failure (never retried -- see
+            # `_run_capture_with_retry`'s docstring): `RuntimeError` for
+            # `continuity` (REQ-16's "camera missing at startup"),
+            # `FileNotFoundError`/`ValueError` for `video_file`/`image_dir`
+            # (a missing file, an empty/unreadable directory).
+            logger.error("pipeline failed to start: %s", exc)
+            return EXIT_PIPELINE_ERROR
     finally:
         shutdown.restore()
-        export_manager.close()
+        if export_manager is not None:
+            export_manager.close()
         if debug_handle is not None:
             debug_handle.stop()
         if websocket_handle is not None:
