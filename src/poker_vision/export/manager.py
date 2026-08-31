@@ -95,6 +95,15 @@ class ExportManager:
     def __init__(self, exporters: Iterable[EventExporter]) -> None:
         self._exporters = list(exporters)
 
+    @property
+    def exporters(self) -> list[EventExporter]:
+        """The constructed adapters, e.g. so a caller can find the one
+        `WebSocketEventExporter` instance (if `export.websocket` is
+        enabled) to actually serve its FastAPI app -- REQ-45's lifecycle,
+        not this class, owns running a real server for it.
+        """
+        return list(self._exporters)
+
     def export(self, events: Iterable[Event]) -> None:
         # Materialized once so a one-shot iterable (e.g. a generator) isn't
         # exhausted by the first adapter and left empty for the rest.

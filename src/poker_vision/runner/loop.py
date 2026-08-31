@@ -71,6 +71,10 @@ class LoopExitReason(StrEnum):
     """Why `FrameLoop.run()` returned instead of raising."""
 
     EOF = "eof"
+    # REQ-45: `run()`'s caller (the CLI/lifecycle) asked to stop, via
+    # `should_stop`, after a SIGINT/SIGTERM -- the frame in flight when the
+    # signal arrived was still allowed to finish first (see `run()`).
+    SHUTDOWN_REQUESTED = "shutdown_requested"
 
 
 class FatalPipelineError(RuntimeError):
@@ -184,13 +188,20 @@ class FrameLoop:
         self._notify(context)
         return context
 
-    def run(self) -> LoopExitReason:
-        """Process frames from `capture` until EOF or a fatal error.
+    def run(self, should_stop: Callable[[], bool] | None = None) -> LoopExitReason:
+        """Process frames from `capture` until EOF, a shutdown request, or a fatal error.
 
         Returns `LoopExitReason.EOF` once the capture source is exhausted
         (`video_file`/`image_dir` raising `StopIteration` -- REQ-44's "EOF
         ... beendet den Loop regulär"; `continuity` never does, see
-        REQ-16). Raises `FatalPipelineError` once
+        REQ-16). `should_stop` is REQ-45's own hook for SIGINT/SIGTERM
+        handling: checked once after each frame has fully finished
+        processing (never mid-frame), so a graceful shutdown request
+        always lets the in-flight frame complete -- "aktueller Frame wird
+        abgeschlossen" -- before `run()` returns
+        `LoopExitReason.SHUTDOWN_REQUESTED`; omitted (the default), this
+        loop only ever stops at EOF or a fatal error, exactly as before
+        REQ-45. Raises `FatalPipelineError` once
         `max_consecutive_core_errors` core-chain frames in a row have
         failed. Any other exception -- notably a live `continuity` read
         failure -- propagates as-is.
@@ -202,6 +213,8 @@ class FrameLoop:
                     f"{self._consecutive_core_errors} consecutive core-chain failures "
                     f"(max {self._max_consecutive_core_errors}); aborting"
                 )
+            if should_stop is not None and should_stop():
+                return LoopExitReason.SHUTDOWN_REQUESTED
         return LoopExitReason.EOF
 
     def _notify(self, context: FrameContext) -> None:

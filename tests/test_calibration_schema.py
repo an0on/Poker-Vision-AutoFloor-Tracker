@@ -293,6 +293,14 @@ def test_load_calibration_runtime_schema_violation_raises(tmp_path):
         load_calibration_runtime(path)
 
 
+# REQ-45: a missing/unreadable calibration file is a clean `ValueError`,
+# not an unhandled `FileNotFoundError` -- see the matching `load_config`
+# test in test_config.py.
+def test_load_calibration_runtime_missing_file_raises_value_error(tmp_path):
+    with pytest.raises(ValueError, match="could not be read"):
+        load_calibration_runtime(tmp_path / "does_not_exist.json")
+
+
 # --- REQ-11: hard geometric validation on load ------------------------------
 #
 # AC-7: every rule listed in REQ-11 gets its own test, checked against both
