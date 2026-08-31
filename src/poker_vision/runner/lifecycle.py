@@ -657,6 +657,16 @@ def run_command(config_path: str | Path) -> int:
             logger.error("calibration invalid: %s", exc)
             return EXIT_CALIBRATION_ERROR
 
+        if shutdown.requested():
+            # A SIGINT/SIGTERM landing during config/calibration loading
+            # (Codex review): skip stage construction -- opening
+            # `JsonlEventExporter`'s session file included -- and every
+            # server start below entirely, rather than doing all of that
+            # only to immediately tear it down again once the (not yet
+            # even started) frame loop would have noticed the same flag.
+            logger.info("shutdown requested during startup; exiting before the loop starts")
+            return EXIT_OK
+
         try:
             detector, tracker, hysteresis, state_machine, export_manager, debug_server = (
                 _build_stages(config, calibration)
@@ -669,6 +679,10 @@ def run_command(config_path: str | Path) -> int:
             # (Codex review).
             logger.error("config invalid: %s", exc)
             return EXIT_CONFIG_ERROR
+
+        if shutdown.requested():
+            logger.info("shutdown requested during startup; exiting before the loop starts")
+            return EXIT_OK
 
         if debug_server is not None:
             try:
@@ -689,6 +703,10 @@ def run_command(config_path: str | Path) -> int:
                     exc,
                 )
                 debug_server = None
+
+        if shutdown.requested():
+            logger.info("shutdown requested during startup; exiting before the loop starts")
+            return EXIT_OK
 
         # `build_exporters()` (REQ-37a) constructs a `WebSocketEventExporter`
         # when `export.websocket` is enabled, but constructing it doesn't

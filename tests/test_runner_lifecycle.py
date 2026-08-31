@@ -813,6 +813,43 @@ def test_run_command_installs_signal_handlers_before_anything_else(tmp_path, mon
     assert signal.getsignal(signal.SIGINT) == original_handler
 
 
+def test_run_command_skips_stage_construction_if_shutdown_requested_during_startup(
+    tmp_path, monkeypatch
+):
+    # Codex review (REQ-45): a SIGINT/SIGTERM landing while loading
+    # config/calibration must not still go on to construct every stage
+    # (opening JsonlEventExporter's session file) and start both servers
+    # only to immediately tear all of that down again -- `run_command`
+    # should notice the flag and exit before doing any of it.
+    import poker_vision.runner.lifecycle as lifecycle_module
+
+    config_path, export_dir = _valid_setup(tmp_path)
+    real_load_calibration = lifecycle_module.load_calibration_runtime
+
+    def spy_load_calibration(path):
+        result = real_load_calibration(path)
+        # Signal handlers are already installed by this point (the
+        # earlier test above verifies that): raise a real SIGINT so it
+        # goes through the actual handler, not a hand-set flag.
+        signal.raise_signal(signal.SIGINT)
+        return result
+
+    monkeypatch.setattr(lifecycle_module, "load_calibration_runtime", spy_load_calibration)
+
+    build_stages_calls: list[int] = []
+    real_build_stages = lifecycle_module._build_stages
+
+    def spy_build_stages(config, calibration):
+        build_stages_calls.append(1)
+        return real_build_stages(config, calibration)
+
+    monkeypatch.setattr(lifecycle_module, "_build_stages", spy_build_stages)
+
+    assert run_command(config_path) == EXIT_OK
+    assert build_stages_calls == []
+    assert not export_dir.exists()
+
+
 def test_run_command_starts_the_websocket_export_server_when_enabled(tmp_path, monkeypatch):
     # Codex review (REQ-45): `build_exporters()` constructs a
     # `WebSocketEventExporter` whenever `export.websocket` is enabled,
