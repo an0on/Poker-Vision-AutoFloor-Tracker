@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import signal
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -356,6 +357,73 @@ def test_run_capture_with_retry_returns_shutdown_requested_when_signaled_during_
     assert reason == LoopExitReason.SHUTDOWN_REQUESTED
 
 
+class _BlocksUntilClosedCapture:
+    """Simulates a `continuity` camera that's still open but has stopped
+    delivering frames: `__next__()` blocks until `close()` is called from
+    another thread, exactly like `ContinuityCapture`'s own documented
+    `close()` contract ("unblock any waiting __next__()/get_latest()
+    call")."""
+
+    source_id = "blocking"
+
+    def __init__(self) -> None:
+        self._closed = threading.Event()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> Frame:
+        self._closed.wait()
+        raise RuntimeError("continuity capture closed while waiting for a frame")
+
+    def close(self) -> None:
+        self._closed.set()
+
+
+def test_run_capture_with_retry_interrupts_a_blocked_read_on_first_shutdown_request(
+    tmp_path, monkeypatch
+):
+    # Codex review (REQ-45): without `_CaptureInterruptWatcher`, a blocked
+    # __next__() call is only ever unstuck by the second-SIGINT forced
+    # abort -- the first SIGINT/SIGTERM has to be able to interrupt it too.
+    calibration, detector, tracker, hysteresis, state_machine, export_manager = _stages(
+        tmp_path, []
+    )
+    capture = _BlocksUntilClosedCapture()
+    monkeypatch.setattr("poker_vision.runner.lifecycle.create_capture", lambda source: capture)
+    config = _continuity_config(backoff_seconds=0.01, timeout_seconds=5.0)
+    shutdown = ShutdownController()
+
+    def request_shutdown_shortly() -> None:
+        time.sleep(0.1)
+        shutdown._event.set()
+
+    trigger = threading.Thread(target=request_shutdown_shortly)
+    trigger.start()
+    started_at = time.monotonic()
+
+    reason = _run_capture_with_retry(
+        config,
+        shutdown,
+        calibration,
+        detector,
+        tracker,
+        hysteresis,
+        state_machine,
+        export_manager,
+        None,
+    )
+
+    elapsed = time.monotonic() - started_at
+    trigger.join()
+
+    assert reason == LoopExitReason.SHUTDOWN_REQUESTED
+    # Bounded by the 0.1s shutdown trigger + scheduling slack -- would
+    # otherwise block indefinitely (capture.__next__() never returns on
+    # its own).
+    assert elapsed < 2.0
+
+
 def test_run_capture_with_retry_never_retries_the_very_first_open_failure(tmp_path, monkeypatch):
     calibration, detector, tracker, hysteresis, state_machine, export_manager = _stages(
         tmp_path, []
@@ -684,16 +752,27 @@ def test_validate_command_invalid_calibration_returns_calibration_error(tmp_path
     assert validate_command(config_path) == EXIT_CALIBRATION_ERROR
 
 
-def test_validate_command_never_constructs_stages(tmp_path):
-    # An ambiguous detector mode only breaks *stage construction*
-    # (`_build_stages`, used by `run`) -- `validate` only checks config +
-    # calibration (REQ-45's own AC), so it must still report success.
+def test_validate_command_rejects_ambiguous_detector_mode(tmp_path):
+    # Codex review (REQ-45): a config `run` rejects (an ambiguous/empty
+    # mock-mode selection) must not pass `validate` -- otherwise a config
+    # `validate` calls valid could still fail immediately on `run`.
     config_path, _ = _valid_setup(tmp_path)
     config = json.loads(config_path.read_text())
     del config["paths"]["mock_script"]
     config_path.write_text(json.dumps(config))
 
+    assert validate_command(config_path) == EXIT_CONFIG_ERROR
+
+
+def test_validate_command_never_constructs_export_or_debug_stages(tmp_path):
+    # `validate` checks the detector too (see test above) but must not
+    # construct the export/debug stages, which have real side effects
+    # (e.g. `JsonlEventExporter` creates its export directory and opens a
+    # session file) a mere validation pass shouldn't cause.
+    config_path, export_dir = _valid_setup(tmp_path)
+
     assert validate_command(config_path) == EXIT_OK
+    assert not export_dir.exists()
 
 
 def test_build_stages_raises_value_error_for_unbuildable_detector(tmp_path):

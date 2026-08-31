@@ -142,6 +142,62 @@ class ShutdownController:
         """Sleep up to `timeout` seconds, waking early if shutdown is requested."""
         self._event.wait(timeout)
 
+    def wait_forever(self) -> None:
+        """Block until shutdown is requested -- never times out."""
+        self._event.wait()
+
+
+class _CaptureInterruptWatcher:
+    """Makes a blocked `continuity` read respond to the *first*
+    SIGINT/SIGTERM instead of only the second (Codex review, REQ-45).
+
+    `should_stop` (checked between frames) can't help when `capture.
+    __next__()` itself never returns -- a live camera that's still open
+    but has stopped delivering frames blocks inside `ContinuityCapture.
+    __next__()`'s own internal wait loop indefinitely. That class's
+    `close()` is explicitly documented to "unblock any waiting __next__()/
+    get_latest() call" from another thread, which is exactly what's
+    needed here: a small daemon thread that does nothing until shutdown
+    is requested, then closes whichever capture is current at that moment
+    -- from a thread other than the (possibly still blocked) main one.
+    `_run_capture_with_retry` re-registers the current capture on every
+    reconnect via `set_current()`, and must route its own per-attempt
+    cleanup through `close_current()` too (not call `capture.close()`
+    directly) -- `Capture.close()`'s "safe to call more than once"
+    contract covers repeated *sequential* calls, not necessarily two
+    threads calling it at the exact same instant (e.g. `ContinuityCapture.
+    close()` isn't lock-guarded, so concurrent calls could race inside the
+    underlying `cv2.VideoCapture.release()`). `close_current()` swaps
+    `_current` to `None` under its own lock before closing, so whichever
+    of the watcher thread or the main retry loop gets there first is the
+    only one that actually calls `capture.close()`.
+    """
+
+    def __init__(self, shutdown: ShutdownController) -> None:
+        self._shutdown = shutdown
+        self._lock = threading.Lock()
+        self._current: Capture | None = None
+        self._thread = threading.Thread(
+            target=self._watch, name="capture-interrupt-watcher", daemon=True
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def set_current(self, capture: Capture | None) -> None:
+        with self._lock:
+            self._current = capture
+
+    def close_current(self) -> None:
+        with self._lock:
+            capture, self._current = self._current, None
+        if capture is not None:
+            capture.close()
+
+    def _watch(self) -> None:
+        self._shutdown.wait_forever()
+        self.close_current()
+
 
 @dataclass
 class _ServerHandle:
@@ -277,12 +333,25 @@ def _run_capture_with_retry(
     numbering continuous across reconnects by adding a running offset
     (the last globally-numbered frame index actually delivered, plus one)
     to every frame from a freshly (re)opened capture.
+
+    A `continuity` capture that's still open but has stopped delivering
+    frames would otherwise block inside `capture.__next__()` past the
+    first SIGINT/SIGTERM -- `should_stop` (checked between frames, not
+    inside a blocked read) can't help there. `_CaptureInterruptWatcher`
+    closes the current capture as soon as shutdown is requested, from a
+    separate thread, so that blocked read is interrupted promptly instead
+    of only on a forced second SIGINT (`ContinuityCapture.close()`'s own
+    documented contract).
     """
     is_continuity = config.source.type is SourceType.CONTINUITY
     retry_config = config.source.continuity_retry
     window = _RetryWindow()
     opened_before = False
     next_frame_index_offset = 0
+    watcher: _CaptureInterruptWatcher | None = None
+    if is_continuity:
+        watcher = _CaptureInterruptWatcher(shutdown)
+        watcher.start()
 
     while True:
         try:
@@ -301,6 +370,8 @@ def _run_capture_with_retry(
         capture: Capture = (
             _OffsetCapture(raw_capture, next_frame_index_offset) if is_continuity else raw_capture
         )
+        if watcher is not None:
+            watcher.set_current(capture)
 
         health = _CaptureHealthTracker()
         loop = FrameLoop(
@@ -334,7 +405,10 @@ def _run_capture_with_retry(
                 f"continuity capture kept failing for >= {retry_config.timeout_seconds}s: {exc}"
             ) from exc
         finally:
-            capture.close()
+            if watcher is not None:
+                watcher.close_current()
+            else:
+                capture.close()
 
 
 def _handle_continuity_failure(
@@ -403,10 +477,25 @@ def validate_command(config_path: str | Path) -> int:
         return EXIT_CONFIG_ERROR
 
     try:
-        load_calibration_runtime(config.paths.calibration_runtime)
+        calibration = load_calibration_runtime(config.paths.calibration_runtime)
     except ValueError as exc:
         logger.error("calibration invalid: %s", exc)
         return EXIT_CALIBRATION_ERROR
+
+    try:
+        # Only the detector, not the full `_build_stages()`: constructing
+        # the export/debug stages too would have real side effects (e.g.
+        # `JsonlEventExporter` creates its export directory and opens a
+        # session file) that a mere validation pass shouldn't cause.
+        # `create_detector` is the one piece of "Stufen konstruieren" that
+        # can reject an otherwise schema-valid config (an ambiguous/empty
+        # mock-mode selection -- see its own docstring), so `validate`
+        # must check it too, or a config `run` would reject as invalid
+        # could still pass `validate` (Codex review finding).
+        create_detector(config, calibration)
+    except (ValueError, OSError) as exc:
+        logger.error("config invalid: %s", exc)
+        return EXIT_CONFIG_ERROR
 
     logger.info("config and calibration are valid")
     return EXIT_OK
