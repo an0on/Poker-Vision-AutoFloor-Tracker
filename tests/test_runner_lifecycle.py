@@ -1,0 +1,1090 @@
+"""REQ-45: CLI-facing lifecycle -- stage construction, exit codes,
+SIGINT/SIGTERM shutdown, and continuity retry-with-backoff.
+"""
+
+from __future__ import annotations
+
+import json
+import signal
+import socket
+import threading
+import time
+from datetime import UTC, datetime
+from pathlib import Path
+
+import cv2
+import numpy as np
+import pytest
+
+from poker_vision.calibration.camera import CameraIntrinsics, DistortionCoefficients
+from poker_vision.calibration.geometry import TableDimensions, TablePoint, TablePolygon, TableUnit
+from poker_vision.calibration.homography import HomographyMatrix
+from poker_vision.calibration.runtime import CalibrationRuntime
+from poker_vision.calibration.zones import CalibrationSeat, GlobalZones, SeatZones
+from poker_vision.capture.frame import Frame
+from poker_vision.capture.image_dir import ImageDirCapture
+from poker_vision.config import (
+    Config,
+    ContinuityRetryConfig,
+    HysteresisConfig,
+    PathsConfig,
+    Resolution,
+    SourceConfig,
+    SourceType,
+)
+from poker_vision.detection.mock import MockDetector
+from poker_vision.export.jsonl import JsonlEventExporter
+from poker_vision.export.manager import ExportManager
+from poker_vision.runner.lifecycle import (
+    EXIT_CALIBRATION_ERROR,
+    EXIT_CONFIG_ERROR,
+    EXIT_FORCED_ABORT,
+    EXIT_OK,
+    EXIT_PIPELINE_ERROR,
+    ContinuityRetryExhausted,
+    ShutdownController,
+    _build_stages,
+    _handle_continuity_failure,
+    _RetryWindow,
+    _run_capture_with_retry,
+    _start_uvicorn_background,
+    run_command,
+    validate_command,
+)
+from poker_vision.runner.loop import FatalPipelineError, FrameLoop, LoopExitReason
+from poker_vision.state.machine import PipelineStateMachine
+from poker_vision.tracking.hysteresis import HysteresisFilter
+from poker_vision.tracking.tracker import NearestMatchTracker
+
+_IDENTITY = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+_RESOLUTION = Resolution(width=100, height=100)
+_DEALER_MAX_DISTANCE = 5.0
+
+
+def _polygon(*coords: tuple[float, float]) -> TablePolygon:
+    return TablePolygon(points=[TablePoint(x=x, y=y) for x, y in coords])
+
+
+_SEAT_1 = CalibrationSeat(
+    seat_id="seat_1",
+    zones=SeatZones(
+        player_area=_polygon((0, 0), (50, 0), (50, 50), (0, 50)),
+        chip_zone=_polygon((10, 10), (30, 10), (30, 30), (10, 30)),
+    ),
+)
+_BOARD_ZONE = _polygon((60, 60), (90, 60), (90, 90), (60, 90))
+_DEALER_AREA = _polygon((0, 60), (20, 60), (20, 80), (0, 80))
+
+
+def _calibration() -> CalibrationRuntime:
+    return CalibrationRuntime(
+        schema_version="1.0",
+        table_id="test_table",
+        based_on="test",
+        inference_resolution=_RESOLUTION,
+        camera=CameraIntrinsics(fx=1000.0, fy=1000.0, cx=50.0, cy=50.0),
+        distortion=DistortionCoefficients(),
+        homography=HomographyMatrix(forward=_IDENTITY, inverse=_IDENTITY),
+        table=TableDimensions(width=100.0, height=100.0, unit=TableUnit.CM),
+        seats=[_SEAT_1],
+        zones=GlobalZones(board_zone=_BOARD_ZONE, dealer_area=_DEALER_AREA),
+    )
+
+
+def _chip_entry(frame_index: int, x: float, y: float) -> dict:
+    return {
+        "frame_index": frame_index,
+        "detections": [
+            {
+                "coordinate_space": "table",
+                "object_class": "chip",
+                "confidence": 0.9,
+                "center": {"x": x, "y": y},
+            }
+        ],
+    }
+
+
+def _write_script(path: Path, lines: list[dict]) -> Path:
+    script_path = path / "script.jsonl"
+    with script_path.open("w") as handle:
+        for line in lines:
+            handle.write(json.dumps(line))
+            handle.write("\n")
+    return script_path
+
+
+def _make_image_dir(tmp_path: Path, count: int) -> Path:
+    image_dir = tmp_path / "images"
+    image_dir.mkdir()
+    for i in range(count):
+        image = np.full((_RESOLUTION.height, _RESOLUTION.width, 3), i, dtype=np.uint8)
+        cv2.imwrite(str(image_dir / f"frame_{i:03d}.png"), image)
+    return image_dir
+
+
+def _frame(frame_index: int) -> Frame:
+    image = np.zeros((_RESOLUTION.height, _RESOLUTION.width, 3), dtype=np.uint8)
+    return Frame(
+        image=image, timestamp=datetime.now(UTC), frame_index=frame_index, source_id="test"
+    )
+
+
+def _stages(
+    tmp_path: Path, script_lines: list[dict], *, n_on: int = 1, n_off: int = 1
+) -> tuple[
+    CalibrationRuntime,
+    MockDetector,
+    NearestMatchTracker,
+    HysteresisFilter,
+    PipelineStateMachine,
+    ExportManager,
+]:
+    calibration = _calibration()
+    script = _write_script(tmp_path, script_lines)
+    detector = MockDetector(calibration, script)
+    tracker = NearestMatchTracker(max_distance=5.0, table=calibration.table)
+    hysteresis = HysteresisFilter(HysteresisConfig(n_on=n_on, n_off=n_off))
+    state_machine = PipelineStateMachine(["seat_1"])
+    export_manager = ExportManager([])
+    return calibration, detector, tracker, hysteresis, state_machine, export_manager
+
+
+def _continuity_config(**retry_kwargs: object) -> Config:
+    return Config(
+        schema_version="1.0",
+        device="cpu",
+        source=SourceConfig(
+            type=SourceType.CONTINUITY,
+            device_index=0,
+            continuity_retry=ContinuityRetryConfig(**retry_kwargs),
+        ),
+        paths=PathsConfig(
+            calibration_authoring="a.json", calibration_runtime="r.json", jsonl_export_dir="e"
+        ),
+    )
+
+
+def _image_dir_config(path: Path) -> Config:
+    return Config(
+        schema_version="1.0",
+        device="cpu",
+        source=SourceConfig(type=SourceType.IMAGE_DIR, path=path),
+        paths=PathsConfig(
+            calibration_authoring="a.json",
+            calibration_runtime="r.json",
+            jsonl_export_dir="e",
+            mock_script="s.jsonl",
+        ),
+    )
+
+
+class _ScriptedCapture:
+    """A `Capture` test double driven by a fixed script of frames/exceptions
+    (`StopIteration` implicitly once the script runs out)."""
+
+    source_id = "scripted"
+
+    def __init__(self, script: list[Frame | Exception]) -> None:
+        self._script = list(script)
+        self.closed = False
+
+    def __iter__(self) -> _ScriptedCapture:
+        return self
+
+    def __next__(self) -> Frame:
+        if not self._script:
+            raise StopIteration
+        item = self._script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    def close(self) -> None:
+        self.closed = True
+
+
+# --- _RetryWindow / _handle_continuity_failure -------------------------------
+
+
+def test_retry_window_exhausts_after_continuous_failure_exceeds_timeout():
+    retry_config = ContinuityRetryConfig(backoff_seconds=0.01, timeout_seconds=0.05)
+    shutdown = ShutdownController()
+    window = _RetryWindow()
+
+    results = []
+    for _ in range(30):
+        ok = _handle_continuity_failure(RuntimeError("x"), window, retry_config, shutdown, "read")
+        results.append(ok)
+        if not ok:
+            break
+
+    assert results[-1] is False
+    assert all(results[:-1])
+
+
+def test_retry_window_reset_extends_the_effective_budget():
+    retry_config = ContinuityRetryConfig(backoff_seconds=0.01, timeout_seconds=0.05)
+    shutdown = ShutdownController()
+    window = _RetryWindow()
+
+    assert _handle_continuity_failure(RuntimeError("x"), window, retry_config, shutdown, "read")
+    window.reset()
+    time.sleep(0.06)  # would have exhausted the original (un-reset) window
+    assert _handle_continuity_failure(RuntimeError("x"), window, retry_config, shutdown, "read")
+
+
+def test_handle_continuity_failure_rechecks_timeout_after_a_longer_backoff():
+    # Codex review (REQ-45): backoff_seconds > timeout_seconds must still
+    # give up once the backoff sleep itself has pushed the outage past the
+    # timeout -- the pre-sleep check alone (elapsed ~0 right after the
+    # first failure) can never catch this on its own.
+    retry_config = ContinuityRetryConfig(backoff_seconds=0.05, timeout_seconds=0.01)
+    shutdown = ShutdownController()
+    window = _RetryWindow()
+
+    assert not _handle_continuity_failure(
+        RuntimeError("x"), window, retry_config, shutdown, "read"
+    )
+
+
+def test_handle_continuity_failure_gives_up_immediately_when_shutdown_requested():
+    retry_config = ContinuityRetryConfig(backoff_seconds=10.0, timeout_seconds=10.0)
+    shutdown = ShutdownController()
+    shutdown._event.set()
+    window = _RetryWindow()
+
+    assert not _handle_continuity_failure(RuntimeError("x"), window, retry_config, shutdown, "read")
+
+
+# --- _run_capture_with_retry ---------------------------------------------------
+
+
+def test_run_capture_with_retry_reopens_after_a_read_failure(tmp_path, monkeypatch):
+    calibration, detector, tracker, hysteresis, state_machine, export_manager = _stages(
+        tmp_path, [_chip_entry(0, 20.0, 20.0)]
+    )
+    attempts: list[object] = []
+
+    def fake_create_capture(source):
+        attempts.append(source)
+        if len(attempts) == 1:
+            return _ScriptedCapture([_frame(0), RuntimeError("read failed")])
+        return _ScriptedCapture([])
+
+    monkeypatch.setattr("poker_vision.runner.lifecycle.create_capture", fake_create_capture)
+    config = _continuity_config(backoff_seconds=0.01, timeout_seconds=2.0)
+    shutdown = ShutdownController()
+
+    reason = _run_capture_with_retry(
+        config,
+        shutdown,
+        calibration,
+        detector,
+        tracker,
+        hysteresis,
+        state_machine,
+        export_manager,
+        None,
+    )
+
+    assert reason == LoopExitReason.EOF
+    assert len(attempts) == 2
+
+
+def test_run_capture_with_retry_keeps_frame_index_monotonic_across_reconnect(
+    tmp_path, monkeypatch
+):
+    # Codex review (REQ-45): a freshly (re)opened continuity capture always
+    # restarts its own frame_index at 0 -- without `_OffsetCapture`, the
+    # reconnected capture's first frame (raw index 0) would be <= the last
+    # index the (long-lived) HysteresisFilter already saw, which is a hard
+    # error there, not a retryable one -- so the retry would defeat itself.
+    calibration, detector, tracker, hysteresis, state_machine, export_manager = _stages(
+        tmp_path, [_chip_entry(i, 20.0, 20.0) for i in range(3)]
+    )
+    attempts: list[object] = []
+
+    def fake_create_capture(source):
+        attempts.append(source)
+        if len(attempts) == 1:
+            return _ScriptedCapture([_frame(0), _frame(1), RuntimeError("read failed")])
+        # Reconnected capture: raw frame_index restarts at 0 again.
+        return _ScriptedCapture([_frame(0)])
+
+    monkeypatch.setattr("poker_vision.runner.lifecycle.create_capture", fake_create_capture)
+    config = _continuity_config(backoff_seconds=0.01, timeout_seconds=2.0)
+    # Deliberately 1: if frame indices regressed, the very first
+    # post-reconnect frame would fail the core chain and immediately blow
+    # this threshold instead of running to EOF.
+    config.runner.max_consecutive_core_errors = 1
+    shutdown = ShutdownController()
+
+    reason = _run_capture_with_retry(
+        config,
+        shutdown,
+        calibration,
+        detector,
+        tracker,
+        hysteresis,
+        state_machine,
+        export_manager,
+        None,
+    )
+
+    assert reason == LoopExitReason.EOF
+    assert len(attempts) == 2
+
+
+def test_run_capture_with_retry_times_out_when_reconnects_only_ever_flicker(
+    tmp_path, monkeypatch
+):
+    # Codex review (REQ-45): a reconnect that delivers exactly one frame
+    # before failing again must not indefinitely reset the retry-timeout
+    # window just because *a* frame arrived -- otherwise a camera that
+    # flickers on for one frame per reconnect, forever, would never reach
+    # timeout_seconds and the fatal-abort path would never fire.
+    calibration, detector, tracker, hysteresis, state_machine, export_manager = _stages(
+        tmp_path, []
+    )
+    attempts: list[object] = []
+
+    def fake_create_capture(source):
+        attempts.append(source)
+        # Safety bound: if the window-reset fix regresses, this loop
+        # would otherwise retry forever (~2s here, at 0.01s backoff) --
+        # fail loudly with a distinct, unmistakable error instead of
+        # hanging the test run indefinitely.
+        if len(attempts) > 200:
+            raise AssertionError(
+                "retry loop did not respect timeout_seconds -- window-reset regression?"
+            )
+        return _ScriptedCapture([_frame(0), RuntimeError("flicker")])
+
+    monkeypatch.setattr("poker_vision.runner.lifecycle.create_capture", fake_create_capture)
+    # backoff_seconds sets the "must stay alive this long to count as
+    # recovered" bar (see `_CaptureHealthTracker.alive_duration()`); each
+    # flicker here lasts far less than that, so the window must never
+    # reset and timeout_seconds must eventually fire.
+    config = _continuity_config(backoff_seconds=0.01, timeout_seconds=0.05)
+    shutdown = ShutdownController()
+
+    with pytest.raises(ContinuityRetryExhausted):
+        _run_capture_with_retry(
+            config,
+            shutdown,
+            calibration,
+            detector,
+            tracker,
+            hysteresis,
+            state_machine,
+            export_manager,
+            None,
+        )
+    assert 2 <= len(attempts) <= 200
+
+
+def test_run_capture_with_retry_returns_shutdown_requested_when_signaled_during_backoff(
+    tmp_path, monkeypatch
+):
+    # Codex review (REQ-45): a SIGINT/SIGTERM landing during a retry
+    # backoff is still a graceful shutdown request (exit 0), not a
+    # ContinuityRetryExhausted abort (exit != 0).
+    calibration, detector, tracker, hysteresis, state_machine, export_manager = _stages(
+        tmp_path, []
+    )
+    shutdown = ShutdownController()
+
+    def fake_create_capture(source):
+        return _ScriptedCapture([RuntimeError("read failed")])
+
+    def fake_wait(self, timeout):
+        # Simulate a signal landing while backoff is "sleeping".
+        self._event.set()
+
+    monkeypatch.setattr("poker_vision.runner.lifecycle.create_capture", fake_create_capture)
+    monkeypatch.setattr("poker_vision.runner.lifecycle.ShutdownController.wait", fake_wait)
+    config = _continuity_config(backoff_seconds=10.0, timeout_seconds=30.0)
+
+    reason = _run_capture_with_retry(
+        config,
+        shutdown,
+        calibration,
+        detector,
+        tracker,
+        hysteresis,
+        state_machine,
+        export_manager,
+        None,
+    )
+
+    assert reason == LoopExitReason.SHUTDOWN_REQUESTED
+
+
+class _BlocksUntilClosedCapture:
+    """Simulates a `continuity` camera that's still open but has stopped
+    delivering frames: `__next__()` blocks until `close()` is called from
+    another thread, exactly like `ContinuityCapture`'s own documented
+    `close()` contract ("unblock any waiting __next__()/get_latest()
+    call")."""
+
+    source_id = "blocking"
+
+    def __init__(self) -> None:
+        self._closed = threading.Event()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> Frame:
+        self._closed.wait()
+        raise RuntimeError("continuity capture closed while waiting for a frame")
+
+    def close(self) -> None:
+        self._closed.set()
+
+
+def test_run_capture_with_retry_interrupts_a_blocked_read_on_first_shutdown_request(
+    tmp_path, monkeypatch
+):
+    # Codex review (REQ-45): without `_CaptureInterruptWatcher`, a blocked
+    # __next__() call is only ever unstuck by the second-SIGINT forced
+    # abort -- the first SIGINT/SIGTERM has to be able to interrupt it too.
+    calibration, detector, tracker, hysteresis, state_machine, export_manager = _stages(
+        tmp_path, []
+    )
+    capture = _BlocksUntilClosedCapture()
+    monkeypatch.setattr("poker_vision.runner.lifecycle.create_capture", lambda source: capture)
+    config = _continuity_config(backoff_seconds=0.01, timeout_seconds=5.0)
+    shutdown = ShutdownController()
+
+    def request_shutdown_shortly() -> None:
+        time.sleep(0.1)
+        shutdown._event.set()
+
+    trigger = threading.Thread(target=request_shutdown_shortly)
+    trigger.start()
+    started_at = time.monotonic()
+
+    reason = _run_capture_with_retry(
+        config,
+        shutdown,
+        calibration,
+        detector,
+        tracker,
+        hysteresis,
+        state_machine,
+        export_manager,
+        None,
+    )
+
+    elapsed = time.monotonic() - started_at
+    trigger.join()
+
+    assert reason == LoopExitReason.SHUTDOWN_REQUESTED
+    # Bounded by the 0.1s shutdown trigger + scheduling slack -- would
+    # otherwise block indefinitely (capture.__next__() never returns on
+    # its own).
+    assert elapsed < 2.0
+
+
+def test_capture_interrupt_watcher_closes_a_capture_registered_after_shutdown():
+    # Codex review (REQ-45): shutdown can be requested in the narrow
+    # window between create_capture() returning and set_current()
+    # registering the new capture (e.g. a slow-to-open device) -- the
+    # watcher must keep re-checking rather than firing once and exiting,
+    # or a capture registered in that window would never be interrupted.
+    from poker_vision.runner.lifecycle import _CaptureInterruptWatcher
+
+    shutdown = ShutdownController()
+    watcher = _CaptureInterruptWatcher(shutdown)
+    watcher.start()
+    try:
+        shutdown._event.set()
+        time.sleep(0.02)  # let the watcher's first pass run and find nothing
+
+        capture = _ScriptedCapture([])
+        watcher.set_current(capture)
+
+        deadline = time.monotonic() + 2.0
+        while not capture.closed and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        assert capture.closed is True
+    finally:
+        # Without this, the watcher (shutdown already set) keeps
+        # re-polling forever -- a leaked, if now no longer CPU-hungry,
+        # background thread for the rest of the test session.
+        watcher.stop()
+
+
+def test_run_capture_with_retry_retries_non_runtime_error_read_failures(tmp_path, monkeypatch):
+    # Codex review (REQ-45): ContinuityCapture's reader thread republishes
+    # any exception from a camera read or frame construction, not only
+    # RuntimeError -- these must still go through the retry policy instead
+    # of bypassing it as an immediate pipeline failure.
+    calibration, detector, tracker, hysteresis, state_machine, export_manager = _stages(
+        tmp_path, []
+    )
+    attempts: list[object] = []
+
+    def fake_create_capture(source):
+        attempts.append(source)
+        if len(attempts) == 1:
+            return _ScriptedCapture([ValueError("bad frame")])
+        return _ScriptedCapture([])
+
+    monkeypatch.setattr("poker_vision.runner.lifecycle.create_capture", fake_create_capture)
+    config = _continuity_config(backoff_seconds=0.01, timeout_seconds=2.0)
+    shutdown = ShutdownController()
+
+    reason = _run_capture_with_retry(
+        config,
+        shutdown,
+        calibration,
+        detector,
+        tracker,
+        hysteresis,
+        state_machine,
+        export_manager,
+        None,
+    )
+
+    assert reason == LoopExitReason.EOF
+    assert len(attempts) == 2
+
+
+def test_run_capture_with_retry_never_retries_the_very_first_open_failure(tmp_path, monkeypatch):
+    calibration, detector, tracker, hysteresis, state_machine, export_manager = _stages(
+        tmp_path, []
+    )
+
+    def fake_create_capture(source):
+        raise RuntimeError("camera not available")
+
+    monkeypatch.setattr("poker_vision.runner.lifecycle.create_capture", fake_create_capture)
+    config = _continuity_config(backoff_seconds=0.01, timeout_seconds=5.0)
+    shutdown = ShutdownController()
+
+    with pytest.raises(RuntimeError, match="camera not available"):
+        _run_capture_with_retry(
+            config,
+            shutdown,
+            calibration,
+            detector,
+            tracker,
+            hysteresis,
+            state_machine,
+            export_manager,
+            None,
+        )
+
+
+def test_run_capture_with_retry_gives_up_once_timeout_exceeded(tmp_path, monkeypatch):
+    calibration, detector, tracker, hysteresis, state_machine, export_manager = _stages(
+        tmp_path, []
+    )
+    attempts: list[object] = []
+
+    def fake_create_capture(source):
+        attempts.append(source)
+        if len(attempts) == 1:
+            return _ScriptedCapture([RuntimeError("boom")])
+        raise RuntimeError("still broken")
+
+    monkeypatch.setattr("poker_vision.runner.lifecycle.create_capture", fake_create_capture)
+    config = _continuity_config(backoff_seconds=0.02, timeout_seconds=0.08)
+    shutdown = ShutdownController()
+
+    with pytest.raises(ContinuityRetryExhausted):
+        _run_capture_with_retry(
+            config,
+            shutdown,
+            calibration,
+            detector,
+            tracker,
+            hysteresis,
+            state_machine,
+            export_manager,
+            None,
+        )
+    assert len(attempts) >= 2
+
+
+def test_run_capture_with_retry_never_retries_non_continuity_sources(tmp_path, monkeypatch):
+    calibration, detector, tracker, hysteresis, state_machine, export_manager = _stages(
+        tmp_path, []
+    )
+
+    def fake_create_capture(source):
+        return _ScriptedCapture([RuntimeError("boom")])
+
+    monkeypatch.setattr("poker_vision.runner.lifecycle.create_capture", fake_create_capture)
+    config = _image_dir_config(tmp_path / "images")
+    shutdown = ShutdownController()
+
+    with pytest.raises(RuntimeError, match="boom"):
+        _run_capture_with_retry(
+            config,
+            shutdown,
+            calibration,
+            detector,
+            tracker,
+            hysteresis,
+            state_machine,
+            export_manager,
+            None,
+        )
+
+
+def test_run_capture_with_retry_propagates_fatal_pipeline_error_without_retrying(
+    tmp_path, monkeypatch
+):
+    # Every scripted detection lies outside the calibrated table, so every
+    # frame fails in the tracking stage -- a core-chain problem, not a
+    # capture problem, so it must never be treated as a continuity outage.
+    calibration, detector, tracker, hysteresis, state_machine, export_manager = _stages(
+        tmp_path,
+        [_chip_entry(i, -50.0, -50.0) for i in range(5)],
+    )
+
+    def fake_create_capture(source):
+        return _ScriptedCapture([_frame(i) for i in range(5)])
+
+    monkeypatch.setattr("poker_vision.runner.lifecycle.create_capture", fake_create_capture)
+    config = _continuity_config(backoff_seconds=0.01, timeout_seconds=5.0)
+    config.runner.max_consecutive_core_errors = 3
+    shutdown = ShutdownController()
+
+    with pytest.raises(FatalPipelineError):
+        _run_capture_with_retry(
+            config,
+            shutdown,
+            calibration,
+            detector,
+            tracker,
+            hysteresis,
+            state_machine,
+            export_manager,
+            None,
+        )
+
+
+# --- ShutdownController -------------------------------------------------------
+
+
+def test_shutdown_controller_first_sigint_sets_event_without_forcing_exit(monkeypatch):
+    controller = ShutdownController()
+    exits: list[int] = []
+    monkeypatch.setattr("poker_vision.runner.lifecycle.os._exit", exits.append)
+
+    controller._handle(signal.SIGINT, None)
+
+    assert controller.requested() is True
+    assert exits == []
+
+
+def test_shutdown_controller_second_sigint_forces_immediate_exit(monkeypatch):
+    controller = ShutdownController()
+    exits: list[int] = []
+    monkeypatch.setattr("poker_vision.runner.lifecycle.os._exit", exits.append)
+
+    controller._handle(signal.SIGINT, None)
+    controller._handle(signal.SIGINT, None)
+
+    assert exits == [EXIT_FORCED_ABORT]
+
+
+def test_shutdown_controller_sigterm_never_forces_exit(monkeypatch):
+    controller = ShutdownController()
+    exits: list[int] = []
+    monkeypatch.setattr("poker_vision.runner.lifecycle.os._exit", exits.append)
+
+    controller._handle(signal.SIGTERM, None)
+    controller._handle(signal.SIGTERM, None)
+    controller._handle(signal.SIGTERM, None)
+
+    assert controller.requested() is True
+    assert exits == []
+
+
+def test_shutdown_controller_install_and_restore_round_trip_handlers():
+    original = signal.getsignal(signal.SIGINT)
+    controller = ShutdownController()
+    try:
+        controller.install()
+        # Bound methods aren't singletons (`x.m is x.m` is False even for
+        # the same underlying method), so compare by equality instead.
+        assert signal.getsignal(signal.SIGINT) == controller._handle
+    finally:
+        controller.restore()
+    assert signal.getsignal(signal.SIGINT) is original
+
+
+# --- shutdown mid-run: current frame completes, export is flushed & valid ----
+
+
+def test_shutdown_mid_run_flushes_a_complete_valid_jsonl_file(tmp_path):
+    calibration = _calibration()
+    script_lines = [_chip_entry(i, 20.0, 20.0) for i in range(5)]
+    script = _write_script(tmp_path, script_lines)
+    image_dir = _make_image_dir(tmp_path, 5)
+    export_dir = tmp_path / "exports"
+
+    shutdown = ShutdownController()
+
+    class _StopAfterTwoCapture:
+        source_id = "test"
+
+        def __init__(self, inner) -> None:
+            self._inner = inner
+            self._count = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self) -> Frame:
+            frame = next(self._inner)
+            self._count += 1
+            if self._count == 2:
+                # Simulate a SIGINT landing right after this frame was
+                # captured -- the loop must still finish processing it.
+                shutdown._event.set()
+            return frame
+
+        def close(self) -> None:
+            self._inner.close()
+
+    capture = _StopAfterTwoCapture(ImageDirCapture(image_dir, _RESOLUTION))
+    detector = MockDetector(calibration, script)
+    tracker = NearestMatchTracker(max_distance=5.0, table=calibration.table)
+    hysteresis = HysteresisFilter(HysteresisConfig(n_on=1, n_off=1))
+    state_machine = PipelineStateMachine(["seat_1"])
+    jsonl_exporter = JsonlEventExporter(export_dir)
+    export_manager = ExportManager([jsonl_exporter])
+
+    loop = FrameLoop(
+        capture=capture,
+        detector=detector,
+        tracker=tracker,
+        hysteresis=hysteresis,
+        calibration=calibration,
+        dealer_nearest_seat_max_distance=_DEALER_MAX_DISTANCE,
+        state_machine=state_machine,
+        export_manager=export_manager,
+    )
+
+    reason = loop.run(should_stop=shutdown.requested)
+    export_manager.close()
+
+    assert reason == LoopExitReason.SHUTDOWN_REQUESTED
+    files = list(export_dir.glob("*.jsonl"))
+    assert len(files) == 1
+    lines = files[0].read_text().splitlines()
+    assert len(lines) == 1
+    event = json.loads(lines[0])
+    assert event["event_type"] == "seat_occupied"
+    assert event["seat"] == "seat_1"
+
+
+# --- run_command / validate_command exit codes --------------------------------
+
+
+def _valid_setup(tmp_path: Path) -> tuple[Path, Path]:
+    calibration = _calibration()
+    calib_path = tmp_path / "calibration.json"
+    calib_path.write_text(calibration.model_dump_json())
+    script = _write_script(tmp_path, [_chip_entry(i, 20.0, 20.0) for i in range(3)])
+    image_dir = _make_image_dir(tmp_path, 3)
+    export_dir = tmp_path / "exports"
+    config = {
+        "schema_version": "1.0",
+        "device": "cpu",
+        "source": {"type": "image_dir", "path": str(image_dir)},
+        "paths": {
+            "calibration_authoring": str(calib_path),
+            "calibration_runtime": str(calib_path),
+            "jsonl_export_dir": str(export_dir),
+            "mock_script": str(script),
+        },
+        "debug": {"enabled": False},
+        # Disabled by default for the same reason as debug above: most
+        # tests using this fixture don't care about a real websocket
+        # server, and letting every one of them bind the same default
+        # port (8765) back-to-back causes real (if usually harmless) OS
+        # port-reuse delays that made the suite noticeably slower.
+        # `test_run_command_starts_the_websocket_export_server_when_
+        # enabled` re-enables it explicitly.
+        "export": {"jsonl": True, "websocket": False, "tournament_director": False},
+    }
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(config))
+    return config_path, export_dir
+
+
+def test_run_command_full_pipeline_succeeds_and_exports(tmp_path):
+    config_path, export_dir = _valid_setup(tmp_path)
+
+    exit_code = run_command(config_path)
+
+    assert exit_code == EXIT_OK
+    files = list(export_dir.glob("*.jsonl"))
+    assert len(files) == 1
+    lines = files[0].read_text().splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0])["event_type"] == "seat_occupied"
+
+
+def test_run_command_installs_signal_handlers_before_anything_else(tmp_path, monkeypatch):
+    # Codex review (REQ-45): if a SIGINT/SIGTERM lands before `shutdown.
+    # install()` runs, Python's default handler (KeyboardInterrupt) would
+    # bypass this function's cleanup entirely -- an already-started
+    # server left running, JsonlEventExporter's session file unflushed.
+    # `install()` must therefore be the very first thing `run_command`
+    # does, before even `load_config()`.
+    import poker_vision.runner.lifecycle as lifecycle_module
+
+    config_path, _ = _valid_setup(tmp_path)
+    original_handler = signal.getsignal(signal.SIGINT)
+    seen: dict[str, object] = {}
+    real_load_config = lifecycle_module.load_config
+
+    def spy_load_config(path):
+        seen["sigint_handler"] = signal.getsignal(signal.SIGINT)
+        return real_load_config(path)
+
+    monkeypatch.setattr(lifecycle_module, "load_config", spy_load_config)
+
+    run_command(config_path)
+
+    assert seen["sigint_handler"] != original_handler
+    assert signal.getsignal(signal.SIGINT) == original_handler
+
+
+def test_run_command_skips_stage_construction_if_shutdown_requested_during_startup(
+    tmp_path, monkeypatch
+):
+    # Codex review (REQ-45): a SIGINT/SIGTERM landing while loading
+    # config/calibration must not still go on to construct every stage
+    # (opening JsonlEventExporter's session file) and start both servers
+    # only to immediately tear all of that down again -- `run_command`
+    # should notice the flag and exit before doing any of it.
+    import poker_vision.runner.lifecycle as lifecycle_module
+
+    config_path, export_dir = _valid_setup(tmp_path)
+    real_load_calibration = lifecycle_module.load_calibration_runtime
+
+    def spy_load_calibration(path):
+        result = real_load_calibration(path)
+        # Signal handlers are already installed by this point (the
+        # earlier test above verifies that): raise a real SIGINT so it
+        # goes through the actual handler, not a hand-set flag.
+        signal.raise_signal(signal.SIGINT)
+        return result
+
+    monkeypatch.setattr(lifecycle_module, "load_calibration_runtime", spy_load_calibration)
+
+    build_stages_calls: list[int] = []
+    real_build_stages = lifecycle_module._build_stages
+
+    def spy_build_stages(config, calibration):
+        build_stages_calls.append(1)
+        return real_build_stages(config, calibration)
+
+    monkeypatch.setattr(lifecycle_module, "_build_stages", spy_build_stages)
+
+    assert run_command(config_path) == EXIT_OK
+    assert build_stages_calls == []
+    assert not export_dir.exists()
+
+
+def test_run_command_starts_the_websocket_export_server_when_enabled(tmp_path, monkeypatch):
+    # Codex review (REQ-45): `build_exporters()` constructs a
+    # `WebSocketEventExporter` whenever `export.websocket` is enabled,
+    # but constructing it doesn't serve its FastAPI app anywhere on its
+    # own; the lifecycle must start it, the same way it starts the debug
+    # server. `_start_uvicorn_background` is monkeypatched below, so this
+    # never binds a real port either.
+    config_path, _ = _valid_setup(tmp_path)
+    config = json.loads(config_path.read_text())
+    config["export"]["websocket"] = True
+    config_path.write_text(json.dumps(config))
+    calls: list[tuple[object, str, int]] = []
+
+    class _FakeHandle:
+        def stop(self, timeout: float = 5.0) -> None:
+            pass
+
+    def fake_start(app, host, port):
+        calls.append((app, host, port))
+        return _FakeHandle()
+
+    monkeypatch.setattr("poker_vision.runner.lifecycle._start_uvicorn_background", fake_start)
+
+    assert run_command(config_path) == EXIT_OK
+    started_apps = [(host, port) for _app, host, port in calls]
+    assert ("0.0.0.0", 8765) in started_apps  # Config.ports.websocket's default
+
+
+def test_run_command_invalid_config_returns_config_error(tmp_path):
+    bad_config = tmp_path / "config.json"
+    bad_config.write_text("{not valid json")
+    assert run_command(bad_config) == EXIT_CONFIG_ERROR
+
+
+def test_run_command_missing_config_file_returns_config_error(tmp_path):
+    assert run_command(tmp_path / "does_not_exist.json") == EXIT_CONFIG_ERROR
+
+
+def test_run_command_invalid_calibration_returns_calibration_error(tmp_path):
+    config_path, _ = _valid_setup(tmp_path)
+    config = json.loads(config_path.read_text())
+    Path(config["paths"]["calibration_runtime"]).write_text("{not valid json")
+
+    assert run_command(config_path) == EXIT_CALIBRATION_ERROR
+
+
+def test_run_command_ambiguous_detector_mode_returns_config_error(tmp_path):
+    config_path, _ = _valid_setup(tmp_path)
+    config = json.loads(config_path.read_text())
+    del config["paths"]["mock_script"]
+    config_path.write_text(json.dumps(config))
+
+    assert run_command(config_path) == EXIT_CONFIG_ERROR
+
+
+def test_run_command_missing_mock_script_returns_config_error(tmp_path):
+    # Codex review (REQ-45): MockDetector raises OSError (FileNotFoundError)
+    # for a missing paths.mock_script -- run must classify it the same way
+    # validate already does (EXIT_CONFIG_ERROR), not fall through to the
+    # CLI's generic "unexpected error" catch-all.
+    config_path, _ = _valid_setup(tmp_path)
+    config = json.loads(config_path.read_text())
+    config["paths"]["mock_script"] = str(tmp_path / "does_not_exist.jsonl")
+    config_path.write_text(json.dumps(config))
+
+    assert run_command(config_path) == EXIT_CONFIG_ERROR
+
+
+def test_start_uvicorn_background_raises_when_port_already_in_use():
+    # Codex review (REQ-45): a caller must be told when the server didn't
+    # actually bind, not get a handle back regardless.
+    from fastapi import FastAPI
+
+    blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    blocker.bind(("127.0.0.1", 0))
+    blocker.listen(1)
+    port = blocker.getsockname()[1]
+    try:
+        with pytest.raises(RuntimeError, match="did not start"):
+            _start_uvicorn_background(FastAPI(), "127.0.0.1", port)
+    finally:
+        blocker.close()
+
+
+def test_start_uvicorn_background_requests_shutdown_when_startup_times_out(monkeypatch):
+    # Codex review (REQ-45): when the wait loop exits because the deadline
+    # passed (thread still alive, not because it already died), the
+    # server must still be told to stop before this function raises --
+    # otherwise a slow-to-bind server could go on to bind the port later,
+    # as an orphan nothing can stop anymore.
+    from fastapi import FastAPI
+
+    created: list[object] = []
+
+    class _NeverStartsServer:
+        def __init__(self, config):
+            self.started = False
+            self.should_exit = False
+            created.append(self)
+
+        def run(self):
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline and not self.should_exit:
+                time.sleep(0.01)
+
+    monkeypatch.setattr("poker_vision.runner.lifecycle.uvicorn.Server", _NeverStartsServer)
+
+    with pytest.raises(RuntimeError, match="did not start"):
+        _start_uvicorn_background(FastAPI(), "127.0.0.1", 0, startup_timeout=0.05)
+
+    assert len(created) == 1
+    assert created[0].should_exit is True
+
+
+def test_run_command_continues_without_debug_server_if_it_fails_to_start(tmp_path, monkeypatch):
+    # Codex review (REQ-45): `debug` is best-effort -- a startup failure
+    # (e.g. ports.mjpeg already in use) must not abort an otherwise-healthy
+    # pipeline, just run without it (loudly logged, checked separately).
+    config_path, export_dir = _valid_setup(tmp_path)
+    config = json.loads(config_path.read_text())
+    config["debug"] = {"enabled": True}
+    config_path.write_text(json.dumps(config))
+
+    def fake_start(app, host, port):
+        raise RuntimeError("port in use")
+
+    monkeypatch.setattr("poker_vision.runner.lifecycle._start_uvicorn_background", fake_start)
+
+    assert run_command(config_path) == EXIT_OK
+    assert len(list(export_dir.glob("*.jsonl"))) == 1
+
+
+def test_run_command_missing_capture_source_returns_pipeline_error(tmp_path):
+    config_path, _ = _valid_setup(tmp_path)
+    config = json.loads(config_path.read_text())
+    config["source"]["path"] = str(tmp_path / "no_such_directory")
+    config_path.write_text(json.dumps(config))
+
+    assert run_command(config_path) == EXIT_PIPELINE_ERROR
+
+
+def test_validate_command_valid_setup_returns_ok(tmp_path):
+    config_path, _ = _valid_setup(tmp_path)
+    assert validate_command(config_path) == EXIT_OK
+
+
+def test_validate_command_invalid_config_returns_config_error(tmp_path):
+    bad_config = tmp_path / "config.json"
+    bad_config.write_text("not json")
+    assert validate_command(bad_config) == EXIT_CONFIG_ERROR
+
+
+def test_validate_command_invalid_calibration_returns_calibration_error(tmp_path):
+    config_path, _ = _valid_setup(tmp_path)
+    config = json.loads(config_path.read_text())
+    Path(config["paths"]["calibration_runtime"]).write_text("not json")
+
+    assert validate_command(config_path) == EXIT_CALIBRATION_ERROR
+
+
+def test_validate_command_rejects_ambiguous_detector_mode(tmp_path):
+    # Codex review (REQ-45): a config `run` rejects (an ambiguous/empty
+    # mock-mode selection) must not pass `validate` -- otherwise a config
+    # `validate` calls valid could still fail immediately on `run`.
+    config_path, _ = _valid_setup(tmp_path)
+    config = json.loads(config_path.read_text())
+    del config["paths"]["mock_script"]
+    config_path.write_text(json.dumps(config))
+
+    assert validate_command(config_path) == EXIT_CONFIG_ERROR
+
+
+def test_validate_command_never_constructs_export_or_debug_stages(tmp_path):
+    # `validate` checks the detector too (see test above) but must not
+    # construct the export/debug stages, which have real side effects
+    # (e.g. `JsonlEventExporter` creates its export directory and opens a
+    # session file) a mere validation pass shouldn't cause.
+    config_path, export_dir = _valid_setup(tmp_path)
+
+    assert validate_command(config_path) == EXIT_OK
+    assert not export_dir.exists()
+
+
+def test_build_stages_raises_value_error_for_unbuildable_detector(tmp_path):
+    calibration = _calibration()
+    config = _image_dir_config(tmp_path / "images")
+    config.paths.mock_script = None
+
+    with pytest.raises(ValueError, match="exactly one of"):
+        _build_stages(config, calibration)

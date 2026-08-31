@@ -58,11 +58,31 @@ class Resolution(StrictModel):
     height: int = Field(gt=0)
 
 
+class ContinuityRetryConfig(StrictModel):
+    """Retry policy for a `continuity` capture failure at runtime (REQ-45).
+
+    CLAUDE.md's Fehlerpolitik calls for retry-with-backoff on a live-source
+    error instead of aborting the whole pipeline on the first one:
+    `runner.lifecycle` retries a failed/lost continuity capture every
+    `backoff_seconds`, and only gives up (fatal abort, exit != 0) once
+    failures have persisted continuously for `timeout_seconds`. The window
+    resets once the capture is healthy again (a frame is actually
+    delivered) — this bounds one *outage*, not the run's cumulative
+    downtime. Ignored entirely for `video_file`/`image_dir`, which never
+    retry (REQ-15's determinism: a capture error there aborts immediately,
+    as before).
+    """
+
+    backoff_seconds: float = Field(default=2.0, gt=0.0)
+    timeout_seconds: float = Field(default=30.0, gt=0.0)
+
+
 class SourceConfig(StrictModel):
     type: SourceType
     device_index: int | None = Field(default=None, ge=0)
     path: Path | None = None
     resolution_cap: Resolution = Field(default_factory=lambda: Resolution(width=1920, height=1080))
+    continuity_retry: ContinuityRetryConfig = Field(default_factory=ContinuityRetryConfig)
 
     @model_validator(mode="after")
     def _check_required_field_for_type(self) -> SourceConfig:
@@ -283,10 +303,16 @@ class Config(StrictModel):
 
 
 def load_config(path: str | Path) -> Config:
-    """Load and validate a Config from a JSON file. Raises on any schema violation."""
+    """Load and validate a Config from a JSON file. Raises `ValueError` on
+    any problem -- a missing/unreadable file included, so REQ-45's CLI can
+    treat every "invalid config" case the same way (clean message, exit
+    != 0) without needing to know which failed underneath.
+    """
     config_path = Path(path)
     try:
         raw = json.loads(config_path.read_text())
+    except OSError as exc:
+        raise ValueError(f"{config_path}: could not be read ({exc})") from exc
     except json.JSONDecodeError as exc:
         raise ValueError(f"{config_path}: not valid JSON ({exc})") from exc
     try:
