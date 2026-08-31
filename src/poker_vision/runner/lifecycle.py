@@ -171,7 +171,19 @@ class _CaptureInterruptWatcher:
     `_current` to `None` under its own lock before closing, so whichever
     of the watcher thread or the main retry loop gets there first is the
     only one that actually calls `capture.close()`.
+
+    The watch loop keeps re-checking after shutdown is first observed,
+    rather than firing once and exiting (Codex review): shutdown could be
+    requested in the narrow window between `create_capture()` returning
+    and `set_current()` registering it (e.g. a slow-to-open device), in
+    which case a one-shot watcher would already be gone and this new
+    capture would never get interrupted if it then blocked. Once shutdown
+    is set, `ShutdownController.wait_forever()` returns immediately on
+    every call, so the loop below polls `close_current()` on a short
+    interval instead of busy-spinning.
     """
+
+    _REARM_POLL_INTERVAL_SECONDS = 0.05
 
     def __init__(self, shutdown: ShutdownController) -> None:
         self._shutdown = shutdown
@@ -196,7 +208,9 @@ class _CaptureInterruptWatcher:
 
     def _watch(self) -> None:
         self._shutdown.wait_forever()
-        self.close_current()
+        while True:
+            self.close_current()
+            time.sleep(self._REARM_POLL_INTERVAL_SECONDS)
 
 
 @dataclass
@@ -391,7 +405,16 @@ def _run_capture_with_retry(
             return loop.run(should_stop=shutdown.requested)
         except FatalPipelineError:
             raise
-        except RuntimeError as exc:
+        except Exception as exc:
+            # `ContinuityCapture`'s background reader thread republishes
+            # *any* exception from `cv2.VideoCapture.read()` or frame
+            # construction (see its module docstring's `except Exception`
+            # note), not only `RuntimeError` -- a bare `except RuntimeError`
+            # here would let e.g. a `cv2.error` bypass the retry policy
+            # entirely and get reported as an immediate pipeline failure
+            # (Codex review). `FatalPipelineError` is excluded above, and
+            # `not is_continuity` still re-raises immediately: `video_file`/
+            # `image_dir` never retry (REQ-15).
             if not is_continuity:
                 raise
             if health.frame_seen:

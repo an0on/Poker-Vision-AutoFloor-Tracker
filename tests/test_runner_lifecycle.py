@@ -424,6 +424,67 @@ def test_run_capture_with_retry_interrupts_a_blocked_read_on_first_shutdown_requ
     assert elapsed < 2.0
 
 
+def test_capture_interrupt_watcher_closes_a_capture_registered_after_shutdown():
+    # Codex review (REQ-45): shutdown can be requested in the narrow
+    # window between create_capture() returning and set_current()
+    # registering the new capture (e.g. a slow-to-open device) -- the
+    # watcher must keep re-checking rather than firing once and exiting,
+    # or a capture registered in that window would never be interrupted.
+    from poker_vision.runner.lifecycle import _CaptureInterruptWatcher
+
+    shutdown = ShutdownController()
+    watcher = _CaptureInterruptWatcher(shutdown)
+    watcher.start()
+
+    shutdown._event.set()
+    time.sleep(0.02)  # let the watcher's first pass run and find nothing
+
+    capture = _ScriptedCapture([])
+    watcher.set_current(capture)
+
+    deadline = time.monotonic() + 2.0
+    while not capture.closed and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert capture.closed is True
+
+
+def test_run_capture_with_retry_retries_non_runtime_error_read_failures(tmp_path, monkeypatch):
+    # Codex review (REQ-45): ContinuityCapture's reader thread republishes
+    # any exception from a camera read or frame construction, not only
+    # RuntimeError -- these must still go through the retry policy instead
+    # of bypassing it as an immediate pipeline failure.
+    calibration, detector, tracker, hysteresis, state_machine, export_manager = _stages(
+        tmp_path, []
+    )
+    attempts: list[object] = []
+
+    def fake_create_capture(source):
+        attempts.append(source)
+        if len(attempts) == 1:
+            return _ScriptedCapture([ValueError("bad frame")])
+        return _ScriptedCapture([])
+
+    monkeypatch.setattr("poker_vision.runner.lifecycle.create_capture", fake_create_capture)
+    config = _continuity_config(backoff_seconds=0.01, timeout_seconds=2.0)
+    shutdown = ShutdownController()
+
+    reason = _run_capture_with_retry(
+        config,
+        shutdown,
+        calibration,
+        detector,
+        tracker,
+        hysteresis,
+        state_machine,
+        export_manager,
+        None,
+    )
+
+    assert reason == LoopExitReason.EOF
+    assert len(attempts) == 2
+
+
 def test_run_capture_with_retry_never_retries_the_very_first_open_failure(tmp_path, monkeypatch):
     calibration, detector, tracker, hysteresis, state_machine, export_manager = _stages(
         tmp_path, []
