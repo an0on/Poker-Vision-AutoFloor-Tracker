@@ -4,11 +4,12 @@ page that combines it with the WebSocket event list (REQ-38).
 Serves the same kind of "what does the pipeline currently see" view Phase 0
 produced as a single static image (zones, track IDs, rubber-band
 track -> seat line with distance), but as a live `multipart/x-mixed-replace`
-stream over FastAPI/uvicorn, plus the occupancy/dealer/street state from
-`PipelineStateMachine.snapshot()` that Phase 0 had no equivalent of. Actual
-drawing lives in `debug.overlay` -- this module is only the pipeline-facing
-`update_frame()` call and the ASGI plumbing around it, the same split
-`export.websocket` draws between event serialization and its FastAPI app.
+stream over FastAPI/uvicorn, plus the occupancy/dealer/street state that
+Phase 0 had no equivalent of. Actual drawing lives in `debug.overlay`; the
+pipeline-facing side of this module isn't `MjpegDebugServer` at all but
+`debug.frame_hub.LatestFrameHub`, which the loop (`runner/loop.py`)
+publishes into directly, once per successfully processed frame (REQ-46) --
+this module only ever *reads* that same hub, from `_stream()`.
 
 `build_debug_server()` is the config-driven on/off switch (REQ-37, "über
 Config abschaltbar"): when `Config.debug.enabled` is `False`, it returns
@@ -16,17 +17,17 @@ Config abschaltbar"): when `Config.debug.enabled` is `False`, it returns
 server -- is ever constructed, mirroring `export.manager.build_exporters()`'s
 per-adapter enable pattern (REQ-37a).
 
-`update_frame()` is the same synchronous, fire-and-forget call the pipeline
-already makes against every export adapter's `export()`: it renders the
-overlay and stores the encoded JPEG bytes under a lock, from whatever
-thread the pipeline's own frame loop runs on. Each `/mjpeg` connection's
-async generator polls that stored buffer on its own ASGI event loop and
-streams a new multipart part whenever it changes -- the same lock-protected
-shared-state bridge `WebSocketEventExporter` (REQ-35) uses between the
-pipeline thread and uvicorn's loop, but adapted from a per-connection queue
-(every distinct message must be delivered) to a single "latest frame" slot
-(only the newest frame is worth showing; a slow consumer skips stale ones
-rather than backing up).
+REQ-46 moved overlay rendering from eager (every `publish()` call, whether
+or not anyone was watching) to on-demand: `_stream()` is the *only* place
+`render_overlay()` is called from, and it only runs while a client's
+`/mjpeg` connection is open and being iterated -- "ohne verbundenen Client
+findet kein Rendering statt". Each connected client's async generator
+blocks (via `asyncio.to_thread`, so it never stalls the shared ASGI event
+loop or any other connected client) on `LatestFrameHub.get_latest()` for a
+version newer than the last one it rendered, renders + JPEG-encodes that
+frame itself, and streams the result -- independently of every other
+client and of the loop, which never waits on any of this (`LatestFrameHub.
+publish()` never renders or encodes anything).
 
 `GET /` serves `static/index.html` (REQ-38): a plain HTML/CSS/JS file, no
 frontend framework and no build step, that shows the `/mjpeg` stream next
@@ -41,7 +42,6 @@ or per-request templating.
 from __future__ import annotations
 
 import asyncio
-import threading
 from pathlib import Path
 
 import cv2
@@ -50,36 +50,38 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 
-from poker_vision.assignment.models import FrameAssignments
 from poker_vision.calibration.runtime import CalibrationRuntime
-from poker_vision.capture.frame import Frame
 from poker_vision.config import Config, PortsConfig
+from poker_vision.debug.frame_hub import DebugSnapshot, LatestFrameHub
 from poker_vision.debug.overlay import render_overlay
-from poker_vision.state.machine import PipelineStateMachine
-from poker_vision.tracking.models import TrackedFrame
 
 _BOUNDARY = b"frame"
-_POLL_INTERVAL_SECONDS = 0.01
+# How long each client's `_stream()` blocks per `get_latest()` call before
+# re-checking `request.is_disconnected()` -- a "kurzer blockierender Wait
+# mit Timeout" (CLAUDE.md), not a value observed elsewhere: a timeout just
+# means "no newer frame yet, keep waiting", trading off disconnect
+# responsiveness against wakeup frequency the same way `capture.continuity`'s
+# `_DEFAULT_WAIT_TIMEOUT_SECONDS` does for the opposite direction.
+_WAIT_TIMEOUT_SECONDS = 0.5
 _JPEG_ENCODE_PARAMS = [int(cv2.IMWRITE_JPEG_QUALITY), 80]
 _DEBUG_PAGE_TEMPLATE = Path(__file__).parent / "static" / "index.html"
 
 
 class MjpegDebugServer:
-    """Renders and serves the debug overlay as an MJPEG stream (REQ-37),
-    plus the static debug page that combines it with the WebSocket event
-    list (REQ-38).
+    """Serves the debug overlay as an MJPEG stream, rendered on demand per
+    connected client from a shared `LatestFrameHub` (REQ-37, REQ-46), plus
+    the static debug page that combines it with the WebSocket event list
+    (REQ-38).
     """
 
     def __init__(
         self,
         calibration: CalibrationRuntime,
-        state_machine: PipelineStateMachine,
+        frame_hub: LatestFrameHub,
         websocket_port: int = PortsConfig().websocket,
     ) -> None:
         self._calibration = calibration
-        self._state_machine = state_machine
-        self._lock = threading.Lock()
-        self._latest_jpeg: bytes | None = None
+        self.frame_hub = frame_hub
         # `websocket_port` is baked into the page once here rather than on
         # every request: the value is fixed for this server's lifetime (it
         # comes from `Config.ports.websocket`), so re-rendering it per
@@ -106,29 +108,6 @@ class MjpegDebugServer:
                 media_type=f"multipart/x-mixed-replace; boundary={_BOUNDARY.decode()}",
             )
 
-    def update_frame(
-        self,
-        frame: Frame,
-        tracked_frame: TrackedFrame,
-        frame_assignments: FrameAssignments,
-    ) -> None:
-        """Render this frame's overlay and store it as the latest JPEG to stream.
-
-        Called once per processed frame from the pipeline's own frame loop,
-        the same way `PipelineStateMachine.update()` and every export
-        adapter's `export()` are.
-        """
-        annotated = render_overlay(
-            frame.image,
-            self._calibration,
-            tracked_frame,
-            frame_assignments,
-            self._state_machine.snapshot(),
-        )
-        jpeg_bytes = _encode_jpeg(annotated)
-        with self._lock:
-            self._latest_jpeg = jpeg_bytes
-
     async def _stream(self, request: Request):
         # `StreamingResponse` never stops this generator on its own -- unlike
         # `WebSocketEventExporter` (REQ-35), which notices a disconnect via
@@ -137,20 +116,58 @@ class MjpegDebugServer:
         # disconnected()`, a client that goes away (or a test that opens and
         # closes the connection without reading it to completion) would
         # leave this coroutine looping forever.
-        last_sent: bytes | None = None
+        #
+        # `since_version` is this one client's own read position into the
+        # shared hub (REQ-46: `LatestFrameHub` supports any number of
+        # independent readers, unlike `capture.continuity`'s single-consumer
+        # buffer) -- starts at 0 so the very first iteration renders
+        # whatever is already published, if anything.
+        since_version = 0
         while not await request.is_disconnected():
-            with self._lock:
-                jpeg_bytes = self._latest_jpeg
-            if jpeg_bytes is not None and jpeg_bytes is not last_sent:
-                yield (
-                    b"--" + _BOUNDARY + b"\r\n"
-                    b"Content-Type: image/jpeg\r\n"
-                    b"Content-Length: " + str(len(jpeg_bytes)).encode() + b"\r\n\r\n"
-                    + jpeg_bytes
-                    + b"\r\n"
-                )
-                last_sent = jpeg_bytes
-            await asyncio.sleep(_POLL_INTERVAL_SECONDS)
+            # `get_latest()` blocks (with a timeout) inside `threading.
+            # Condition.wait_for` -- run it off the event loop via
+            # `asyncio.to_thread` so it can never stall this or any other
+            # client's coroutine sharing the same uvicorn event loop.
+            result = await asyncio.to_thread(
+                self.frame_hub.get_latest, since_version, _WAIT_TIMEOUT_SECONDS
+            )
+            if result is None:
+                continue
+            frame, snapshot, since_version = result
+            # On-demand rendering (REQ-46): this is the only call to
+            # `render_overlay()` in the whole server, and it only runs here
+            # -- while a client is connected and this generator is being
+            # iterated -- so a `publish()` with no client watching never
+            # renders or encodes anything. Also run off the event loop
+            # (Codex review): `render_overlay`/JPEG encoding are CPU-bound
+            # OpenCV calls, and running them inline here would stall every
+            # other client sharing this same uvicorn event loop for as
+            # long as they take, exactly the kind of per-client isolation
+            # the `get_latest()` offload above is already there for.
+            jpeg_bytes = await asyncio.to_thread(self._render_jpeg, frame.image, snapshot)
+            yield (
+                b"--" + _BOUNDARY + b"\r\n"
+                b"Content-Type: image/jpeg\r\n"
+                b"Content-Length: "
+                + str(len(jpeg_bytes)).encode()
+                + b"\r\n\r\n"
+                + jpeg_bytes
+                + b"\r\n"
+            )
+
+    def _render_jpeg(self, frame_image: np.ndarray, snapshot: DebugSnapshot) -> bytes:
+        """Render + JPEG-encode one frame -- the synchronous, CPU-bound half
+        of `_stream()`'s per-iteration work, split out so it can be run via
+        `asyncio.to_thread` (see the call site's own comment).
+        """
+        annotated = render_overlay(
+            frame_image,
+            self._calibration,
+            snapshot.tracked_frame,
+            snapshot.frame_assignments,
+            snapshot.state_snapshot,
+        )
+        return _encode_jpeg(annotated)
 
     def run(self, host: str = "0.0.0.0", port: int = 8001) -> None:
         """Block, serving this server's FastAPI app via uvicorn."""
@@ -176,16 +193,18 @@ def _render_debug_page(websocket_port: int) -> str:
     return template.replace("{{WS_PORT}}", str(websocket_port))
 
 
-def build_debug_server(
-    config: Config, calibration: CalibrationRuntime, state_machine: PipelineStateMachine
-) -> MjpegDebugServer | None:
-    """Construct the MJPEG debug server iff `config.debug.enabled` (REQ-37, AC-24).
+def build_debug_server(config: Config, calibration: CalibrationRuntime) -> MjpegDebugServer | None:
+    """Construct the MJPEG debug server (and its `LatestFrameHub`) iff
+    `config.debug.enabled` (REQ-37, REQ-46, AC-24).
 
     Returns `None` when disabled, so the caller never constructs a
-    `FastAPI` app or starts a uvicorn server for it -- "debug.enabled: false
-    startet keinen MJPEG-Endpoint" (AC-24), not merely one that draws
-    nothing.
+    `FastAPI` app, a `LatestFrameHub`, or starts a uvicorn server for it --
+    "debug.enabled: false startet keinen MJPEG-Endpoint" (AC-24), not
+    merely one that draws nothing. The returned server's `.frame_hub` is
+    what the loop (`runner/lifecycle.py`) publishes into (REQ-46) -- this
+    function is the single place that hub gets created, so the loop and
+    this server always share the exact same instance.
     """
     if not config.debug.enabled:
         return None
-    return MjpegDebugServer(calibration, state_machine, websocket_port=config.ports.websocket)
+    return MjpegDebugServer(calibration, LatestFrameHub(), websocket_port=config.ports.websocket)

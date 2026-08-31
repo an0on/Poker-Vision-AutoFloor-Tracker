@@ -1,4 +1,5 @@
-"""REQ-37: MJPEG debug endpoint (AC-24).
+"""REQ-37: MJPEG debug endpoint (AC-24), rendered on demand from a
+`LatestFrameHub` per REQ-46.
 
 The `/mjpeg` route streams forever by design (a live debug feed) and only
 stops once the client actually disconnects (`_stream`'s own `request.
@@ -32,6 +33,7 @@ from poker_vision.calibration.runtime import CalibrationRuntime
 from poker_vision.calibration.zones import CalibrationSeat, GlobalZones, SeatZones
 from poker_vision.capture.frame import Frame
 from poker_vision.config import Config
+from poker_vision.debug.frame_hub import DebugSnapshot, LatestFrameHub
 from poker_vision.debug.mjpeg import MjpegDebugServer, build_debug_server
 from poker_vision.state.machine import PipelineStateMachine
 from poker_vision.tracking.models import TrackedFrame
@@ -87,9 +89,17 @@ def _frame_assignments(frame_index: int = 0) -> FrameAssignments:
     return FrameAssignments(schema_version="1.0", frame_index=frame_index, assignments=[])
 
 
-def _server() -> MjpegDebugServer:
+def _snapshot(frame_index: int = 0) -> DebugSnapshot:
     machine = PipelineStateMachine(["seat_1"])
-    return MjpegDebugServer(_calibration(), machine)
+    return DebugSnapshot(
+        tracked_frame=_tracked_frame(frame_index),
+        frame_assignments=_frame_assignments(frame_index),
+        state_snapshot=machine.snapshot(),
+    )
+
+
+def _server(hub: LatestFrameHub | None = None) -> MjpegDebugServer:
+    return MjpegDebugServer(_calibration(), hub if hub is not None else LatestFrameHub())
 
 
 def _request(*, connected: bool) -> Request:
@@ -133,8 +143,9 @@ def test_mjpeg_route_declares_multipart_x_mixed_replace():
 
 
 def test_stream_yields_nothing_for_an_already_disconnected_request():
-    server = _server()
-    server.update_frame(_frame(), _tracked_frame(), _frame_assignments())
+    hub = LatestFrameHub()
+    server = _server(hub)
+    hub.publish(_frame(), _snapshot())
 
     async def run() -> None:
         generator = server._stream(_request(connected=False))
@@ -145,8 +156,9 @@ def test_stream_yields_nothing_for_an_already_disconnected_request():
 
 
 def test_stream_carries_a_decodable_jpeg_frame():
-    server = _server()
-    server.update_frame(_frame(), _tracked_frame(), _frame_assignments())
+    hub = LatestFrameHub()
+    server = _server(hub)
+    hub.publish(_frame(), _snapshot())
 
     part = _first_part(server)
     assert part.startswith(b"--frame\r\n")
@@ -157,17 +169,10 @@ def test_stream_carries_a_decodable_jpeg_frame():
     assert decoded.shape == (400, 400, 3)
 
 
-def test_no_jpeg_stored_before_the_first_update_frame_call():
-    # Nothing rendered yet -- the stream has nothing to emit until the
-    # pipeline calls update_frame() at least once.
-    server = _server()
-    assert server._latest_jpeg is None
-
-
-def test_update_frame_reflects_current_state_snapshot():
-    machine = PipelineStateMachine(["seat_1"])
-    server = MjpegDebugServer(_calibration(), machine)
-    server.update_frame(_frame(), _tracked_frame(), _frame_assignments())
+def test_stream_reflects_the_published_state_snapshot():
+    hub = LatestFrameHub()
+    server = _server(hub)
+    hub.publish(_frame(), _snapshot())
 
     part = _first_part(server)
     jpeg_bytes = part.split(b"\r\n\r\n", 1)[1].rstrip(b"\r\n")
@@ -197,14 +202,12 @@ def _config(debug_enabled: bool) -> Config:
 
 
 def test_build_debug_server_returns_none_when_disabled():
-    machine = PipelineStateMachine(["seat_1"])
-    server = build_debug_server(_config(debug_enabled=False), _calibration(), machine)
+    server = build_debug_server(_config(debug_enabled=False), _calibration())
     assert server is None
 
 
 def test_build_debug_server_returns_server_when_enabled():
-    machine = PipelineStateMachine(["seat_1"])
-    server = build_debug_server(_config(debug_enabled=True), _calibration(), machine)
+    server = build_debug_server(_config(debug_enabled=True), _calibration())
     assert isinstance(server, MjpegDebugServer)
 
 

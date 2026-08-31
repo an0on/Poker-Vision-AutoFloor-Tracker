@@ -26,12 +26,14 @@ from poker_vision.capture.image_dir import ImageDirCapture
 from poker_vision.config import (
     Config,
     ContinuityRetryConfig,
+    DebugConfig,
     HysteresisConfig,
     PathsConfig,
     Resolution,
     SourceConfig,
     SourceType,
 )
+from poker_vision.debug.mjpeg import build_debug_server
 from poker_vision.detection.mock import MockDetector
 from poker_vision.export.jsonl import JsonlEventExporter
 from poker_vision.export.manager import ExportManager
@@ -148,6 +150,49 @@ def _stages(
     state_machine = PipelineStateMachine(["seat_1"])
     export_manager = ExportManager([])
     return calibration, detector, tracker, hysteresis, state_machine, export_manager
+
+
+def test_debug_servers_frame_hub_receives_what_the_loop_publishes(tmp_path):
+    # REQ-46: `build_debug_server()` is the single place `LatestFrameHub`
+    # gets created, and `_run_capture_with_retry` wires `debug_server.
+    # frame_hub` straight into `FrameLoop`'s own `frame_hub` -- the two
+    # must end up sharing the exact same instance, not two independent
+    # ones that never see each other's frames.
+    calibration, detector, tracker, hysteresis, state_machine, export_manager = _stages(
+        tmp_path, [_chip_entry(0, 20.0, 20.0)]
+    )
+    config = Config(
+        schema_version="1.0",
+        device="cpu",
+        source=SourceConfig(type=SourceType.IMAGE_DIR, path=tmp_path),
+        paths=PathsConfig(
+            calibration_authoring="a.json", calibration_runtime="r.json", jsonl_export_dir="e"
+        ),
+        debug=DebugConfig(enabled=True),
+    )
+    debug_server = build_debug_server(config, calibration)
+    assert debug_server is not None
+
+    loop = FrameLoop(
+        capture=iter(()),  # unused -- process_frame() is called directly, not run()
+        detector=detector,
+        tracker=tracker,
+        hysteresis=hysteresis,
+        calibration=calibration,
+        dealer_nearest_seat_max_distance=_DEALER_MAX_DISTANCE,
+        state_machine=state_machine,
+        export_manager=export_manager,
+        frame_hub=debug_server.frame_hub,
+    )
+
+    loop.process_frame(_frame(0))
+
+    result = debug_server.frame_hub.get_latest(since_version=0, timeout=0.05)
+    assert result is not None
+    published_frame, snapshot, _version = result
+    assert published_frame.frame_index == 0
+    assert snapshot.tracked_frame.frame_index == 0
+    assert snapshot.state_snapshot.frame_index == 0
 
 
 def _continuity_config(**retry_kwargs: object) -> Config:
