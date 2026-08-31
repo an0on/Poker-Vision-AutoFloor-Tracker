@@ -498,7 +498,7 @@ def _run_capture_with_retry(
                 dealer_nearest_seat_max_distance=config.thresholds.dealer_nearest_seat_max_distance,
                 state_machine=state_machine,
                 export_manager=export_manager,
-                debug_server=debug_server,
+                frame_hub=debug_server.frame_hub if debug_server is not None else None,
                 max_consecutive_core_errors=config.runner.max_consecutive_core_errors,
                 on_frame_processed=health.mark,
             )
@@ -606,7 +606,7 @@ def _build_stages(config: Config, calibration: CalibrationRuntime) -> _Stages:
     hysteresis = HysteresisFilter(config.hysteresis)
     state_machine = PipelineStateMachine(seat.seat_id for seat in calibration.seats)
     export_manager = ExportManager(build_exporters(config, state_machine))
-    debug_server = build_debug_server(config, calibration, state_machine)
+    debug_server = build_debug_server(config, calibration)
     return detector, tracker, hysteresis, state_machine, export_manager, debug_server
 
 

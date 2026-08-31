@@ -189,9 +189,10 @@ def render_overlay(
 
     Draw order: zones (background), rubber-band lines, track markers (on
     top of both), then the state text block (topmost, most important).
-    Never mutates `frame_image` itself -- the caller (e.g. `MjpegDebugServer.
-    update_frame`) still owns that buffer for its own purposes (e.g. other
-    export adapters reading the same `Frame`).
+    Never mutates `frame_image` itself -- the caller (`MjpegDebugServer.
+    _stream`, rendering on demand per connected client -- REQ-46) still
+    owns that buffer for its own purposes (e.g. other export adapters
+    reading the same `Frame`).
     """
     annotated = frame_image.copy()
     draw_zones(annotated, calibration)

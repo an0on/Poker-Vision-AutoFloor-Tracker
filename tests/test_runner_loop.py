@@ -354,12 +354,12 @@ def test_run_completes_despite_a_failing_export_adapter(tmp_path):
 # --- debug failures never stop the loop --------------------------------------
 
 
-class _AlwaysFailingDebugServer:
-    def update_frame(self, frame, tracked_frame, frame_assignments):
-        raise RuntimeError("synthetic debug rendering failure")
+class _AlwaysFailingFrameHub:
+    def publish(self, frame, snapshot):
+        raise RuntimeError("synthetic debug frame-hub publish failure")
 
 
-def test_run_completes_despite_a_failing_debug_server(tmp_path):
+def test_run_completes_despite_a_failing_frame_hub(tmp_path):
     script_lines = [_chip_entry(0, 20.0, 20.0)]
     calibration = _calibration()
     script = _write_script(tmp_path, script_lines)
@@ -377,7 +377,76 @@ def test_run_completes_despite_a_failing_debug_server(tmp_path):
         dealer_nearest_seat_max_distance=_DEALER_MAX_DISTANCE,
         state_machine=PipelineStateMachine(["seat_1"]),
         export_manager=ExportManager([]),
-        debug_server=_AlwaysFailingDebugServer(),
+        frame_hub=_AlwaysFailingFrameHub(),
     )
 
     assert loop.run() == LoopExitReason.EOF
+
+
+# --- REQ-46: the loop publishes into the frame hub after every successfully --
+# --- processed frame, and never for a discarded one ---------------------------
+
+
+class _RecordingFrameHub:
+    def __init__(self):
+        self.published: list[tuple] = []
+
+    def publish(self, frame, snapshot):
+        self.published.append((frame.frame_index, snapshot))
+
+
+def test_run_publishes_to_the_frame_hub_after_each_successful_frame(tmp_path):
+    script_lines = [_chip_entry(i, 20.0, 20.0) for i in range(3)]
+    hub = _RecordingFrameHub()
+    calibration = _calibration()
+    script = _write_script(tmp_path, script_lines)
+    detector = MockDetector(calibration, script)
+    tracker = NearestMatchTracker(max_distance=5.0, table=calibration.table)
+    hysteresis = HysteresisFilter(HysteresisConfig(n_on=1, n_off=1))
+    capture = ImageDirCapture(_make_image_dir(tmp_path, 3), _RESOLUTION)
+
+    loop = FrameLoop(
+        capture=capture,
+        detector=detector,
+        tracker=tracker,
+        hysteresis=hysteresis,
+        calibration=calibration,
+        dealer_nearest_seat_max_distance=_DEALER_MAX_DISTANCE,
+        state_machine=PipelineStateMachine(["seat_1"]),
+        export_manager=ExportManager([]),
+        frame_hub=hub,
+    )
+
+    assert loop.run() == LoopExitReason.EOF
+    assert [frame_index for frame_index, _snapshot in hub.published] == [0, 1, 2]
+
+
+def test_run_never_publishes_a_frame_the_core_chain_discarded(tmp_path):
+    script_lines = [
+        _chip_entry(0, 20.0, 20.0),
+        # frame 1: a chip far outside the calibrated table -> core-chain
+        # failure, must not reach the frame hub.
+        _chip_entry(1, -50.0, -50.0),
+    ]
+    hub = _RecordingFrameHub()
+    calibration = _calibration()
+    script = _write_script(tmp_path, script_lines)
+    detector = MockDetector(calibration, script)
+    tracker = NearestMatchTracker(max_distance=5.0, table=calibration.table)
+    hysteresis = HysteresisFilter(HysteresisConfig(n_on=1, n_off=1))
+    capture = ImageDirCapture(_make_image_dir(tmp_path, 2), _RESOLUTION)
+
+    loop = FrameLoop(
+        capture=capture,
+        detector=detector,
+        tracker=tracker,
+        hysteresis=hysteresis,
+        calibration=calibration,
+        dealer_nearest_seat_max_distance=_DEALER_MAX_DISTANCE,
+        state_machine=PipelineStateMachine(["seat_1"]),
+        export_manager=ExportManager([]),
+        frame_hub=hub,
+    )
+
+    assert loop.run() == LoopExitReason.EOF
+    assert [frame_index for frame_index, _snapshot in hub.published] == [0]
