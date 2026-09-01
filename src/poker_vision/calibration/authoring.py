@@ -40,13 +40,26 @@ class CalibrationAuthoring(CalibrationGeometryModel):
 
 
 def load_calibration_authoring(path: str | Path) -> CalibrationAuthoring:
-    """Load and validate a CalibrationAuthoring from a JSON file. Raises on any schema violation."""
+    """Load and validate a CalibrationAuthoring from a JSON file. Raises
+    `ValueError` on any problem -- a missing/unreadable file included, the
+    same way `calibration.runtime.load_calibration_runtime` does, so
+    `calib validate`/`calib compile` (REQ-9, REQ-10) can treat every
+    "invalid authoring" case identically without needing to know which
+    failed underneath.
+    """
     calibration_path = Path(path)
     try:
         raw = json.loads(calibration_path.read_text())
+    except OSError as exc:
+        raise ValueError(f"{calibration_path}: could not be read ({exc})") from exc
     except json.JSONDecodeError as exc:
         raise ValueError(f"{calibration_path}: not valid JSON ({exc})") from exc
     try:
         return CalibrationAuthoring.model_validate(raw)
     except ValidationError as exc:
         raise ValueError(f"{calibration_path}: invalid calibration ({exc})") from exc
+
+
+def write_calibration_authoring(authoring: CalibrationAuthoring, path: str | Path) -> None:
+    """Serialize a `CalibrationAuthoring` to JSON (REQ-10's create/edit CLI)."""
+    Path(path).write_text(authoring.model_dump_json(indent=2) + "\n")
