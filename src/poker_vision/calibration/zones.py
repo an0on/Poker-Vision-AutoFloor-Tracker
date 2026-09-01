@@ -61,6 +61,24 @@ class CalibrationGeometryModel(SeatListModel):
     """
 
     zones: GlobalZones
+    # REQ-7: the fixed physical "Kartengeber" (card dealer) position -- one
+    # specific seat, unrelated to the *rotating* dealer button tracked at
+    # runtime (`state.dealer.DealerSeatTracker`'s `dealer_seat`, resolved
+    # fresh every hand via `dealer_area`/nearest-seat fallback, REQ-27/30).
+    # This field is the opposite: a fixed calibration fact about the table
+    # itself. Named `card_dealer_seat_id` specifically to avoid colliding
+    # with that unrelated runtime concept. Whether a 10th player currently
+    # plays from this seat is tournament/game state, out of scope here.
+    card_dealer_seat_id: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _check_card_dealer_seat_id_exists(self) -> CalibrationGeometryModel:
+        if self.card_dealer_seat_id not in {seat.seat_id for seat in self.seats}:
+            raise ValueError(
+                f"card_dealer_seat_id '{self.card_dealer_seat_id}' does not reference "
+                "an existing seat"
+            )
+        return self
 
     @model_validator(mode="after")
     def _check_zone_topology(self) -> CalibrationGeometryModel:

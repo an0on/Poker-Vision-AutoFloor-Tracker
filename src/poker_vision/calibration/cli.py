@@ -12,6 +12,10 @@ Two families of subcommand:
   full, modified document before writing anything back, so every edit is
   checked against REQ-11's zone/topology validation the same way loading
   the file always is -- there is no separate "skip validation" path.
+- `calib mark-zones`: interactive click-based authoring against a
+  reference photo (REQ-10a) -- the actual geometry work lives in
+  `mark_zones.py`/`mark_zones_session.py`, this subcommand just delegates
+  to `mark_zones_interactive.run_interactive_mark_zones`.
 
 Thin argument parsing + JSON/dict plumbing only; the actual geometry (zone
 topology, homography solving) lives in `calibration/zones.py`,
@@ -34,6 +38,8 @@ from poker_vision.calibration.authoring import (
 )
 from poker_vision.calibration.compile import compile_calibration
 from poker_vision.calibration.geometry import TableUnit
+from poker_vision.calibration.mark_zones import DEFAULT_CHIP_ZONE_SHRINK_FACTOR
+from poker_vision.calibration.mark_zones_interactive import run_interactive_mark_zones
 from poker_vision.calibration.runtime import write_calibration_runtime
 from poker_vision.calibration.skeleton import MIN_SEAT_COUNT, build_authoring_skeleton
 from poker_vision.config import Resolution
@@ -168,6 +174,18 @@ def _cmd_create(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# --- mark-zones (REQ-10a) ----------------------------------------------------
+
+
+def _cmd_mark_zones(args: argparse.Namespace) -> int:
+    return run_interactive_mark_zones(
+        image_path=args.image,
+        out_path=args.out,
+        table_id=args.table_id,
+        chip_zone_shrink_factor=args.chip_zone_shrink_factor,
+    )
+
+
 # --- edit (REQ-10) -----------------------------------------------------------
 
 
@@ -284,6 +302,17 @@ def _build_parser() -> argparse.ArgumentParser:
     create_parser.add_argument("--inference-width", type=int, default=1920)
     create_parser.add_argument("--inference-height", type=int, default=1080)
     create_parser.set_defaults(func=_cmd_create)
+
+    mark_zones_parser = subparsers.add_parser(
+        "mark-zones", help="Interactively click a reference photo's geometry (REQ-10a)"
+    )
+    mark_zones_parser.add_argument("--image", required=True, type=Path)
+    mark_zones_parser.add_argument("--out", required=True, type=Path)
+    mark_zones_parser.add_argument("--table-id", required=True)
+    mark_zones_parser.add_argument(
+        "--chip-zone-shrink-factor", type=float, default=DEFAULT_CHIP_ZONE_SHRINK_FACTOR
+    )
+    mark_zones_parser.set_defaults(func=_cmd_mark_zones)
 
     edit_parser = subparsers.add_parser("edit", help="Edit an existing authoring JSON in place")
     edit_subparsers = edit_parser.add_subparsers(dest="edit_command", required=True)

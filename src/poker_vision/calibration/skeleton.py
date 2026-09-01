@@ -189,4 +189,8 @@ def build_authoring_skeleton(
         table={"width": table_width, "height": table_height, "unit": table_unit},
         seats=seats,
         zones=GlobalZones(board_zone=board_zone, dealer_area=dealer_area),
+        # Arbitrary but always valid: seat_1 always exists (seat_count >= MIN_SEAT_COUNT).
+        # This skeleton generator has no notion of a physical Kartengeber position -- the
+        # real one is authored by `calib mark-zones` (REQ-10a) against the reference photo.
+        card_dealer_seat_id=seats[0].seat_id,
     )

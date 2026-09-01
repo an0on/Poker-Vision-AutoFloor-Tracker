@@ -21,11 +21,16 @@ from poker_vision.calibration.homography import HomographyCorrespondences
 from poker_vision.calibration.zones import CalibrationGeometryModel
 from poker_vision.config import Resolution
 
-CALIBRATION_AUTHORING_SCHEMA_VERSION: Literal["1.0"] = "1.0"
+# REQ-11: bumped from "1.0" alongside the new required `card_dealer_seat_id`
+# field (REQ-7) -- schema_version is the format discriminator (REQ-4), so a
+# breaking shape change must change it too, rather than leaving pre-existing
+# "1.0" documents (missing the new field) to fail with a generic validation
+# error instead of a clear "outdated schema version" one.
+CALIBRATION_AUTHORING_SCHEMA_VERSION: Literal["1.1"] = "1.1"
 
 
 class CalibrationAuthoring(CalibrationGeometryModel):
-    schema_version: Literal["1.0"]
+    schema_version: Literal["1.1"]
     table_id: str = Field(min_length=1)
     # REQ-14: the inference resolution the pixel-space homography points
     # below were picked against. Must match `Config.source.resolution_cap`

@@ -55,7 +55,7 @@ _DEALER_AREA = _polygon((0, 60), (20, 60), (20, 80), (0, 80))
 
 def _calibration() -> CalibrationRuntime:
     return CalibrationRuntime(
-        schema_version="1.0",
+        schema_version="1.1",
         table_id="test_table",
         based_on="test",
         inference_resolution=_RESOLUTION,
@@ -65,6 +65,7 @@ def _calibration() -> CalibrationRuntime:
         table=_TABLE,
         seats=[_SEAT_1],
         zones=GlobalZones(board_zone=_BOARD_ZONE, dealer_area=_DEALER_AREA),
+        card_dealer_seat_id="seat_1",
     )
 
 

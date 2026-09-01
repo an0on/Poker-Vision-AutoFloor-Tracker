@@ -268,7 +268,7 @@
       ]
     }
   },
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "table_id": "test_arbitrary_v1",
   "based_on": "SYNTHETIC -- no source calibration; hand-built for REQ-19 ArUco wiring test, not real table geometry",
   "inference_resolution": {
@@ -328,5 +328,6 @@
     "width": 1920.0,
     "height": 1080.0,
     "unit": "mm"
-  }
+  },
+  "card_dealer_seat_id": "seat_1"
 }

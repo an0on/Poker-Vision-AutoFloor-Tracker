@@ -42,7 +42,7 @@ def _calibration() -> CalibrationRuntime:
         ),
     )
     return CalibrationRuntime(
-        schema_version="1.0",
+        schema_version="1.1",
         table_id="t",
         based_on="test",
         inference_resolution=Resolution(width=100, height=100),
@@ -55,6 +55,7 @@ def _calibration() -> CalibrationRuntime:
             board_zone=_polygon((60, 60), (90, 60), (90, 90), (60, 90)),
             dealer_area=_polygon((0, 60), (20, 60), (20, 80), (0, 80)),
         ),
+        card_dealer_seat_id="seat_1",
     )
 
 

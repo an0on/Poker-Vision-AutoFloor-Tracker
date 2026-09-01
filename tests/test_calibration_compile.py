@@ -83,7 +83,7 @@ VALID_ZONES: dict = {
 # (0,0)-(1000,800), no distortion, so this is easy to hand-verify (scale
 # 2.5x in x, 2.0y y, no rotation/skew).
 NO_DISTORTION_AUTHORING: dict = {
-    "schema_version": "1.0",
+    "schema_version": "1.1",
     "table_id": "test_table",
     "inference_resolution": {"width": 1920, "height": 1080},
     "camera": {"fx": 1400.0, "fy": 1400.0, "cx": 960.0, "cy": 540.0},
@@ -99,6 +99,7 @@ NO_DISTORTION_AUTHORING: dict = {
     "table": {"width": 1200.0, "height": 900.0, "unit": "mm"},
     "seats": VALID_SEATS,
     "zones": VALID_ZONES,
+    "card_dealer_seat_id": "seat_1",
 }
 
 
@@ -111,7 +112,7 @@ def _authoring(overrides: dict | None = None) -> CalibrationAuthoring:
 
 def test_compile_produces_valid_runtime():
     runtime = compile_calibration(_authoring(), based_on="calibration/instance.json")
-    assert runtime.schema_version == "1.0"
+    assert runtime.schema_version == "1.1"
     assert runtime.table_id == "test_table"
     assert runtime.based_on == "calibration/instance.json"
     assert runtime.inference_resolution.width == 1920

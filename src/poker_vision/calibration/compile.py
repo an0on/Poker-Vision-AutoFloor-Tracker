@@ -92,4 +92,5 @@ def compile_calibration(authoring: CalibrationAuthoring, based_on: str) -> Calib
         table=authoring.table,
         seats=authoring.seats,
         zones=authoring.zones,
+        card_dealer_seat_id=authoring.card_dealer_seat_id,
     )

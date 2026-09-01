@@ -76,7 +76,7 @@ PHASE0_CELL_PHONE_CENTER = (987.17, 3027.89)
 
 def _runtime(width: int, height: int) -> CalibrationRuntime:
     payload = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "table_id": "test_table",
         "based_on": "calibration/instance.json",
         "inference_resolution": {"width": width, "height": height},
@@ -86,6 +86,7 @@ def _runtime(width: int, height: int) -> CalibrationRuntime:
         "table": {"width": 1200.0, "height": 900.0, "unit": "mm"},
         "seats": VALID_SEATS,
         "zones": VALID_ZONES,
+        "card_dealer_seat_id": "seat_1",
     }
     return CalibrationRuntime.model_validate(payload)
 
