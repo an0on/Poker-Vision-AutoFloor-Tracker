@@ -50,6 +50,14 @@ _KEY_ENTER = 13
 _KEY_SPACE = 32
 _KEY_BACKSPACE = 8
 
+# Reference photos come straight off a phone (e.g. 4032x3024) -- far bigger
+# than the window fits on a typical screen at 1:1. Scaled down for display
+# only; every click is converted back to full-resolution image coordinates
+# ourselves (see `run_interactive_mark_zones`) rather than trusting a
+# resizable window's backend to report already-unscaled coordinates, which
+# isn't consistent across OpenCV's GUI backends/platforms.
+_MAX_DISPLAY_DIMENSION = 1400
+
 _STEP_INSTRUCTIONS: dict[Step, str] = {
     Step.SEATS: "Click a seat's player_area corners, Enter/Space to finish it (need 10 seats)",
     Step.PICK_DEALER: "Click inside the seat that is the fixed card-dealer (Kartengeber) position",
@@ -104,18 +112,6 @@ def _render(base_image: np.ndarray, session: ClickSession) -> np.ndarray:
     return image
 
 
-def _on_mouse(event: int, x: int, y: int, _flags: int, session: ClickSession) -> None:
-    if event != cv2.EVENT_LBUTTONDOWN:
-        return
-    try:
-        if session.step is Step.PICK_DEALER:
-            session.pick_dealer_at((float(x), float(y)))
-        elif session.step is not Step.DONE:
-            session.add_point((float(x), float(y)))
-    except ValueError as exc:
-        print(f"mark-zones: {exc}", file=sys.stderr)
-
-
 def run_interactive_mark_zones(
     image_path: Path,
     out_path: Path,
@@ -132,13 +128,33 @@ def run_interactive_mark_zones(
         return 1
     height, width = image.shape[:2]
     session = ClickSession(image_size=(width, height))
+    display_scale = min(1.0, _MAX_DISPLAY_DIMENSION / max(width, height))
+    display_size = (round(width * display_scale), round(height * display_scale))
 
-    cv2.namedWindow(_WINDOW_NAME, cv2.WINDOW_NORMAL)
-    cv2.setMouseCallback(_WINDOW_NAME, _on_mouse, session)  # type: ignore[arg-type]
+    def on_mouse(event: int, x: int, y: int, _flags: int, _userdata: object) -> None:
+        if event != cv2.EVENT_LBUTTONDOWN:
+            return
+        point = (x / display_scale, y / display_scale)
+        try:
+            if session.step is Step.PICK_DEALER:
+                session.pick_dealer_at(point)
+            elif session.step is not Step.DONE:
+                session.add_point(point)
+        except ValueError as exc:
+            print(f"mark-zones: {exc}", file=sys.stderr)
+
+    # AUTOSIZE (not NORMAL): the window can't be resized by the user/window
+    # manager, so `display_size` -- and therefore `display_scale` -- stays
+    # exactly what `on_mouse` above assumes for the whole session.
+    cv2.namedWindow(_WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
+    cv2.setMouseCallback(_WINDOW_NAME, on_mouse)
 
     try:
         while True:
-            cv2.imshow(_WINDOW_NAME, _render(image, session))
+            frame = _render(image, session)
+            if display_scale < 1.0:
+                frame = cv2.resize(frame, display_size, interpolation=cv2.INTER_AREA)
+            cv2.imshow(_WINDOW_NAME, frame)
             key = cv2.waitKey(20) & 0xFF
             if key == _KEY_ESC:
                 print("mark-zones: aborted, nothing written", file=sys.stderr)
