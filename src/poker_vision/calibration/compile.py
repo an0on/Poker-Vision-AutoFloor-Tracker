@@ -53,7 +53,20 @@ def _solve_homography(authoring: CalibrationAuthoring) -> HomographyMatrix:
             "could not solve a homography from the authored point correspondences "
             "(are they collinear or otherwise degenerate?)"
         )
-    inverse = np.linalg.inv(forward)
+    try:
+        inverse = np.linalg.inv(forward)
+    except np.linalg.LinAlgError as exc:
+        # `cv2.findHomography` returning non-None doesn't guarantee a
+        # numerically invertible result -- an edge case short of the
+        # "collinear/degenerate" case it does catch above can still solve
+        # to an exactly singular matrix. Re-raised as `ValueError` so every
+        # caller up the stack (the CLI included) only has one exception
+        # type to handle for "this authoring can't be compiled", same as
+        # the `forward is None` case just above.
+        raise ValueError(
+            "solved homography is not invertible (are the point correspondences "
+            "degenerate?)"
+        ) from exc
     return HomographyMatrix(forward=forward.tolist(), inverse=inverse.tolist())
 
 
