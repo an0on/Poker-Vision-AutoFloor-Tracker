@@ -40,7 +40,6 @@ _COLOR_OVAL_DONE = (120, 120, 0)
 _COLOR_OVAL_CURRENT = (0, 200, 200)
 _COLOR_BOARD = (255, 0, 255)
 _COLOR_TEXT = (255, 255, 255)
-_COLOR_TEXT_BG = (0, 0, 0)
 
 _FONT = cv2.FONT_HERSHEY_SIMPLEX
 _INSTRUCTION_BAR_HEIGHT = 30
@@ -80,7 +79,19 @@ def _draw_polyline(
         )
 
 
-def _render(base_image: np.ndarray, session: ClickSession) -> np.ndarray:
+def _render_content(base_image: np.ndarray, session: ClickSession) -> np.ndarray:
+    """The clickable photo content, at full resolution -- no instruction bar.
+
+    Kept separate from the bar (see `_compose_display_frame`) rather than
+    drawing the bar directly onto this frame and resizing the combination
+    for display: that would permanently occlude whatever photo content
+    happens to fall in the top `_INSTRUCTION_BAR_HEIGHT` pixels, on every
+    single frame, for as long as the tool runs. Codex review flagged (as a
+    coordinate-mapping bug) what's actually this occlusion risk -- the
+    click math itself round-trips exactly either way, verified separately
+    -- but drawing the bar outside the content entirely removes the
+    occlusion too, which is worth doing regardless.
+    """
     image = base_image.copy()
     for key, points in session.seats.items():
         color = _COLOR_DEALER if key == session.dealer_seat_key else _COLOR_SEAT_DONE
@@ -103,13 +114,24 @@ def _render(base_image: np.ndarray, session: ClickSession) -> np.ndarray:
         _draw_polyline(image, session.board_zone_points, _COLOR_BOARD, closed=False)
     elif session.step is Step.DONE:
         _draw_polyline(image, session.board_zone_points, _COLOR_BOARD, closed=True)
+    return image
 
+
+def _compose_display_frame(content: np.ndarray, session: ClickSession) -> np.ndarray:
+    """Stack a fixed-height instruction bar above the (already display-sized)
+    `content` frame -- a separate strip, not drawn over the content and
+    scaled together with it, so nothing photographed near the top edge is
+    ever hidden (see `_render_content`'s docstring). `content`'s own pixel
+    (0, 0) therefore lands at bar height in the final window image; callers
+    converting a click back to full-resolution coordinates must subtract
+    `_INSTRUCTION_BAR_HEIGHT` first (see `run_interactive_mark_zones`).
+    """
+    bar = np.zeros((_INSTRUCTION_BAR_HEIGHT, content.shape[1], 3), dtype=np.uint8)
     instructions = _STEP_INSTRUCTIONS[session.step]
     if session.step is Step.SEATS:
         instructions += f" ({len(session.seats)}/10 done)"
-    cv2.rectangle(image, (0, 0), (image.shape[1], _INSTRUCTION_BAR_HEIGHT), _COLOR_TEXT_BG, -1)
-    cv2.putText(image, instructions, (8, 20), _FONT, 0.6, _COLOR_TEXT, 1, cv2.LINE_AA)
-    return image
+    cv2.putText(bar, instructions, (8, 20), _FONT, 0.6, _COLOR_TEXT, 1, cv2.LINE_AA)
+    return np.vstack([bar, content])
 
 
 def run_interactive_mark_zones(
@@ -134,7 +156,14 @@ def run_interactive_mark_zones(
     def on_mouse(event: int, x: int, y: int, _flags: int, _userdata: object) -> None:
         if event != cv2.EVENT_LBUTTONDOWN:
             return
-        point = (x / display_scale, y / display_scale)
+        # The instruction bar sits above the content (see
+        # `_compose_display_frame`), so content pixel (0, 0) is at window
+        # y = _INSTRUCTION_BAR_HEIGHT, not 0 -- a click inside the bar
+        # itself (negative content_y) isn't a content click at all.
+        content_y = y - _INSTRUCTION_BAR_HEIGHT
+        if content_y < 0:
+            return
+        point = (x / display_scale, content_y / display_scale)
         try:
             if session.step is Step.PICK_DEALER:
                 session.pick_dealer_at(point)
@@ -151,10 +180,10 @@ def run_interactive_mark_zones(
 
     try:
         while True:
-            frame = _render(image, session)
+            content = _render_content(image, session)
             if display_scale < 1.0:
-                frame = cv2.resize(frame, display_size, interpolation=cv2.INTER_AREA)
-            cv2.imshow(_WINDOW_NAME, frame)
+                content = cv2.resize(content, display_size, interpolation=cv2.INTER_AREA)
+            cv2.imshow(_WINDOW_NAME, _compose_display_frame(content, session))
             key = cv2.waitKey(20) & 0xFF
             if key == _KEY_ESC:
                 print("mark-zones: aborted, nothing written", file=sys.stderr)
