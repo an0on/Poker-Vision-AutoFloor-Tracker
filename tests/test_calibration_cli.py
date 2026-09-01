@@ -47,6 +47,47 @@ def test_create_writes_valid_authoring(tmp_path):
     assert len(document["seats"]) == 8
 
 
+# Codex review: `--out` pointing at an unwritable path (missing parent
+# directory here) must be a clean CLI error, not an unhandled OSError
+# traceback -- covers `compile`/`create`/`edit`'s shared write path.
+def test_create_unwritable_out_path_returns_clean_error(tmp_path, capsys):
+    out = tmp_path / "no_such_dir" / "out.json"
+    exit_code = main(["create", "--out", str(out), "--table-id", "t", "--seats", "6"])
+    assert exit_code == 1
+    assert capsys.readouterr().err
+
+
+def test_compile_unwritable_out_path_returns_clean_error(tmp_path, capsys):
+    authoring_path = _create(tmp_path)
+    out = tmp_path / "no_such_dir" / "runtime.json"
+    exit_code = main(["compile", "--authoring", str(authoring_path), "--out", str(out)])
+    assert exit_code == 1
+    assert capsys.readouterr().err
+
+
+def test_edit_unwritable_out_path_returns_clean_error(tmp_path, capsys):
+    authoring_path = _create(tmp_path)
+    out = tmp_path / "no_such_dir" / "edited.json"
+    exit_code = main(
+        [
+            "edit",
+            "move-zone",
+            "--authoring",
+            str(authoring_path),
+            "--out",
+            str(out),
+            "--global-zone",
+            "board_zone",
+            "--dx",
+            "1",
+            "--dy",
+            "1",
+        ]
+    )
+    assert exit_code == 1
+    assert capsys.readouterr().err
+
+
 def test_create_below_min_seat_count_fails_without_writing_file(tmp_path, capsys):
     out = tmp_path / "authoring.json"
     exit_code = main(["create", "--out", str(out), "--table-id", "t", "--seats", "1"])

@@ -124,10 +124,10 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     try:
         authoring = load_calibration_authoring(args.authoring)
         runtime = compile_calibration(authoring, based_on=str(args.authoring))
-    except (ValueError, ValidationError) as exc:
+        write_calibration_runtime(runtime, args.out)
+    except (ValueError, ValidationError, OSError) as exc:
         print(f"calib compile: {exc}", file=sys.stderr)
         return EXIT_ERROR
-    write_calibration_runtime(runtime, args.out)
     print(f"compiled '{args.authoring}' -> '{args.out}'")
     return EXIT_OK
 
@@ -160,10 +160,10 @@ def _cmd_create(args: argparse.Namespace) -> int:
                 width=args.inference_width, height=args.inference_height
             ),
         )
-    except (ValueError, ValidationError) as exc:
+        write_calibration_authoring(authoring, args.out)
+    except (ValueError, ValidationError, OSError) as exc:
         print(f"calib create: {exc}", file=sys.stderr)
         return EXIT_ERROR
-    write_calibration_authoring(authoring, args.out)
     print(f"created skeleton calibration authoring with {args.seats} seats -> '{args.out}'")
     return EXIT_OK
 
@@ -188,7 +188,7 @@ def _cmd_edit_add_seat(args: argparse.Namespace) -> int:
         )
         out_path = args.out if args.out is not None else args.authoring
         _write_authoring_document(document, out_path)
-    except (ValueError, ValidationError) as exc:
+    except (ValueError, ValidationError, OSError) as exc:
         print(f"calib edit add-seat: {exc}", file=sys.stderr)
         return EXIT_ERROR
     print(f"added seat '{args.seat_id}' -> '{out_path}'")
@@ -205,7 +205,7 @@ def _cmd_edit_remove_seat(args: argparse.Namespace) -> int:
         document["seats"] = remaining
         out_path = args.out if args.out is not None else args.authoring
         _write_authoring_document(document, out_path)
-    except (ValueError, ValidationError) as exc:
+    except (ValueError, ValidationError, OSError) as exc:
         print(f"calib edit remove-seat: {exc}", file=sys.stderr)
         return EXIT_ERROR
     print(f"removed seat '{args.seat_id}' -> '{out_path}'")
@@ -221,7 +221,7 @@ def _cmd_edit_set_zone(args: argparse.Namespace) -> int:
         polygon["points"] = [_parse_point(p) for p in args.points]
         out_path = args.out if args.out is not None else args.authoring
         _write_authoring_document(document, out_path)
-    except (ValueError, ValidationError) as exc:
+    except (ValueError, ValidationError, OSError) as exc:
         print(f"calib edit set-zone: {exc}", file=sys.stderr)
         return EXIT_ERROR
     print(f"updated zone -> '{out_path}'")
@@ -239,7 +239,7 @@ def _cmd_edit_move_zone(args: argparse.Namespace) -> int:
         ]
         out_path = args.out if args.out is not None else args.authoring
         _write_authoring_document(document, out_path)
-    except (ValueError, ValidationError) as exc:
+    except (ValueError, ValidationError, OSError) as exc:
         print(f"calib edit move-zone: {exc}", file=sys.stderr)
         return EXIT_ERROR
     print(f"moved zone by ({args.dx}, {args.dy}) -> '{out_path}'")
