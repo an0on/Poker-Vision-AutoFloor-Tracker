@@ -58,3 +58,15 @@ def load_calibration_runtime(path: str | Path) -> CalibrationRuntime:
         return CalibrationRuntime.model_validate(raw)
     except ValidationError as exc:
         raise ValueError(f"{calibration_path}: invalid calibration ({exc})") from exc
+
+
+def write_calibration_runtime(runtime: CalibrationRuntime, path: str | Path) -> None:
+    """Serialize a `CalibrationRuntime` to JSON (REQ-9).
+
+    `model_dump_json` (not `json.dumps(model_dump())`): field order follows
+    the class definition and float formatting is Pydantic's own consistent
+    serializer -- both fixed for a given schema/value, so `calib compile`
+    run twice on the same authoring input writes byte-identical files
+    (AC-6), and a trailing newline is added so the file is POSIX-text-clean.
+    """
+    Path(path).write_text(runtime.model_dump_json(indent=2) + "\n")

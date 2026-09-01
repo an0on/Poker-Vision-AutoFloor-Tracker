@@ -216,6 +216,13 @@ def test_load_calibration_authoring_schema_violation_raises(tmp_path):
         load_calibration_authoring(path)
 
 
+# REQ-45's exit-code contract needs a clean `ValueError` here too, matching
+# `load_calibration_runtime`'s equivalent test just below.
+def test_load_calibration_authoring_missing_file_raises_value_error(tmp_path):
+    with pytest.raises(ValueError, match="could not be read"):
+        load_calibration_authoring(tmp_path / "does_not_exist.json")
+
+
 # --- Runtime ---------------------------------------------------------------
 
 
