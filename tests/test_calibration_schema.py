@@ -91,6 +91,7 @@ VALID_AUTHORING: dict = {
     "table": {"width": 1200.0, "height": 900.0, "unit": "mm"},
     "seats": VALID_SEATS,
     "zones": VALID_ZONES,
+    "card_dealer_seat_id": "seat_1",
 }
 
 IDENTITY_MATRIX = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
@@ -106,6 +107,7 @@ VALID_RUNTIME: dict = {
     "table": {"width": 1200.0, "height": 900.0, "unit": "mm"},
     "seats": VALID_SEATS,
     "zones": VALID_ZONES,
+    "card_dealer_seat_id": "seat_1",
 }
 
 
@@ -179,6 +181,29 @@ def test_authoring_duplicate_seat_id_rejected():
 def test_authoring_empty_seats_rejected():
     with pytest.raises(ValidationError):
         CalibrationAuthoring.model_validate(_payload(VALID_AUTHORING, seats=[]))
+
+
+# REQ-7/REQ-11: card_dealer_seat_id is the fixed Kartengeber position, distinct
+# from the rotating dealer button's runtime-resolved seat (state.dealer).
+def test_authoring_missing_card_dealer_seat_id_rejected():
+    payload = json.loads(json.dumps(VALID_AUTHORING))
+    del payload["card_dealer_seat_id"]
+    with pytest.raises(ValidationError):
+        CalibrationAuthoring.model_validate(payload)
+
+
+def test_authoring_card_dealer_seat_id_referencing_unknown_seat_rejected():
+    with pytest.raises(ValidationError, match="does not reference an existing seat"):
+        CalibrationAuthoring.model_validate(
+            _payload(VALID_AUTHORING, card_dealer_seat_id="seat_does_not_exist")
+        )
+
+
+def test_runtime_card_dealer_seat_id_referencing_unknown_seat_rejected():
+    with pytest.raises(ValidationError, match="does not reference an existing seat"):
+        CalibrationRuntime.model_validate(
+            _payload(VALID_RUNTIME, card_dealer_seat_id="seat_does_not_exist")
+        )
 
 
 def test_authoring_polygon_needs_at_least_three_points():

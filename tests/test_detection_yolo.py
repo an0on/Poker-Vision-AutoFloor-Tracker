@@ -65,6 +65,7 @@ def _runtime() -> CalibrationRuntime:
                 ]
             },
         },
+        "card_dealer_seat_id": "seat_1",
     }
     return CalibrationRuntime.model_validate(payload)
 

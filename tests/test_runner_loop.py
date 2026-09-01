@@ -65,6 +65,7 @@ def _calibration() -> CalibrationRuntime:
         table=_TABLE,
         seats=[_SEAT_1],
         zones=GlobalZones(board_zone=_BOARD_ZONE, dealer_area=_DEALER_AREA),
+        card_dealer_seat_id="seat_1",
     )
 
 

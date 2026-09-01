@@ -417,3 +417,69 @@ def test_full_workflow_create_edit_validate_compile(tmp_path):
     )
     runtime = load_calibration_runtime(runtime_path)
     assert runtime.table_id == "workflow_table"
+
+
+# --- mark-zones (REQ-10a) -----------------------------------------------------
+#
+# The actual interactive window/mouse loop needs a display this project has
+# no headless-CI equivalent for (see mark_zones_interactive.py's docstring);
+# what's testable here is that the CLI parses its arguments and forwards them
+# correctly, via monkeypatching the one function `_cmd_mark_zones` calls.
+
+
+def test_mark_zones_forwards_parsed_arguments(tmp_path, monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_run_interactive_mark_zones(*, image_path, out_path, table_id, chip_zone_shrink_factor):
+        captured["image_path"] = image_path
+        captured["out_path"] = out_path
+        captured["table_id"] = table_id
+        captured["chip_zone_shrink_factor"] = chip_zone_shrink_factor
+        return 0
+
+    monkeypatch.setattr(
+        "poker_vision.calibration.cli.run_interactive_mark_zones",
+        fake_run_interactive_mark_zones,
+    )
+    image_path = tmp_path / "reference.jpg"
+    out_path = tmp_path / "authoring.json"
+    exit_code = main(
+        [
+            "mark-zones",
+            "--image",
+            str(image_path),
+            "--out",
+            str(out_path),
+            "--table-id",
+            "dopo_table",
+            "--chip-zone-shrink-factor",
+            "0.4",
+        ]
+    )
+    assert exit_code == 0
+    assert captured == {
+        "image_path": image_path,
+        "out_path": out_path,
+        "table_id": "dopo_table",
+        "chip_zone_shrink_factor": 0.4,
+    }
+
+
+def test_mark_zones_default_chip_zone_shrink_factor(tmp_path, monkeypatch):
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        "poker_vision.calibration.cli.run_interactive_mark_zones",
+        lambda **kwargs: captured.update(kwargs) or 0,
+    )
+    main(
+        [
+            "mark-zones",
+            "--image",
+            str(tmp_path / "reference.jpg"),
+            "--out",
+            str(tmp_path / "authoring.json"),
+            "--table-id",
+            "dopo_table",
+        ]
+    )
+    assert captured["chip_zone_shrink_factor"] == pytest.approx(0.5)

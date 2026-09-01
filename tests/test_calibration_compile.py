@@ -99,6 +99,7 @@ NO_DISTORTION_AUTHORING: dict = {
     "table": {"width": 1200.0, "height": 900.0, "unit": "mm"},
     "seats": VALID_SEATS,
     "zones": VALID_ZONES,
+    "card_dealer_seat_id": "seat_1",
 }
 
 

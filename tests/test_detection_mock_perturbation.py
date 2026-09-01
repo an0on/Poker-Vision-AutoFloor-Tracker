@@ -83,6 +83,7 @@ def _runtime() -> CalibrationRuntime:
         "table": {"width": TABLE_WIDTH, "height": TABLE_HEIGHT, "unit": "mm"},
         "seats": VALID_SEATS,
         "zones": VALID_ZONES,
+        "card_dealer_seat_id": "seat_1",
     }
     return CalibrationRuntime.model_validate(payload)
 

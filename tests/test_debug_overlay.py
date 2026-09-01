@@ -64,6 +64,7 @@ CALIBRATION = CalibrationRuntime(
     table=TableDimensions(width=1200.0, height=900.0, unit=TableUnit.MM),
     seats=[SEAT_1],
     zones=GlobalZones(board_zone=BOARD_ZONE, dealer_area=DEALER_AREA),
+    card_dealer_seat_id="seat_1",
 )
 
 

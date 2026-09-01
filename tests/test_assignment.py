@@ -44,6 +44,7 @@ def _calibration(
         table=TableDimensions(width=1200.0, height=900.0, unit=TableUnit.MM),
         seats=seats,
         zones=GlobalZones(board_zone=board_zone, dealer_area=dealer_area),
+        card_dealer_seat_id=seats[0].seat_id,
     )
 
 

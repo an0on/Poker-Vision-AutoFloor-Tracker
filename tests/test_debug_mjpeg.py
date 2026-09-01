@@ -69,6 +69,7 @@ def _calibration() -> CalibrationRuntime:
             board_zone=_polygon((150, 300), (250, 300), (250, 350), (150, 350)),
             dealer_area=_polygon((300, 300), (350, 300), (350, 350), (300, 350)),
         ),
+        card_dealer_seat_id="seat_1",
     )
 
 

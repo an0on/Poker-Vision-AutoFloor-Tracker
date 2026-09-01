@@ -328,5 +328,6 @@
     "width": 1920.0,
     "height": 1080.0,
     "unit": "mm"
-  }
+  },
+  "card_dealer_seat_id": "seat_1"
 }
