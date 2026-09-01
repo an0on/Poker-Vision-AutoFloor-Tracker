@@ -80,7 +80,7 @@ _DEALER_AREA = _polygon((0, 60), (20, 60), (20, 80), (0, 80))
 
 def _calibration() -> CalibrationRuntime:
     return CalibrationRuntime(
-        schema_version="1.0",
+        schema_version="1.1",
         table_id="test_table",
         based_on="test",
         inference_resolution=_RESOLUTION,

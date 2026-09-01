@@ -86,7 +86,7 @@ ROTATE_90_INVERSE = [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]
 
 def _runtime(forward: list[list[float]], inverse: list[list[float]]) -> CalibrationRuntime:
     payload = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "table_id": "test_table",
         "based_on": "calibration/instance.json",
         # Matches _frame()'s 10x10 image, so the resolution guard in

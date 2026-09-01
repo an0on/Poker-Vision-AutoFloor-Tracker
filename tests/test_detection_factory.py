@@ -42,7 +42,7 @@ def _calibration() -> CalibrationRuntime:
         ),
     )
     return CalibrationRuntime(
-        schema_version="1.0",
+        schema_version="1.1",
         table_id="t",
         based_on="test",
         inference_resolution=Resolution(width=100, height=100),

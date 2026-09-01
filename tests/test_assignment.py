@@ -34,7 +34,7 @@ def _calibration(
     seats: list[CalibrationSeat], board_zone: TablePolygon, dealer_area: TablePolygon
 ) -> CalibrationRuntime:
     return CalibrationRuntime(
-        schema_version="1.0",
+        schema_version="1.1",
         table_id="test_table",
         based_on="test",
         inference_resolution=Resolution(width=1920, height=1080),

@@ -75,7 +75,7 @@ VALID_CAMERA: dict = {"fx": 1400.0, "fy": 1400.0, "cx": 960.0, "cy": 540.0}
 VALID_DISTORTION: dict = {"k1": 0.01, "k2": -0.02, "p1": 0.0, "p2": 0.0, "k3": 0.0}
 
 VALID_AUTHORING: dict = {
-    "schema_version": "1.0",
+    "schema_version": "1.1",
     "table_id": "test_table",
     "inference_resolution": {"width": 1920, "height": 1080},
     "camera": VALID_CAMERA,
@@ -97,7 +97,7 @@ VALID_AUTHORING: dict = {
 IDENTITY_MATRIX = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
 
 VALID_RUNTIME: dict = {
-    "schema_version": "1.0",
+    "schema_version": "1.1",
     "table_id": "test_table",
     "based_on": "calibration/instance.json",
     "inference_resolution": {"width": 1920, "height": 1080},
@@ -123,7 +123,7 @@ def _payload(base: dict, **overrides: object) -> dict:
 
 def test_valid_authoring_loads():
     calibration = CalibrationAuthoring.model_validate(VALID_AUTHORING)
-    assert calibration.schema_version == "1.0"
+    assert calibration.schema_version == "1.1"
     assert len(calibration.seats) == 2
     assert calibration.seats[0].seat_id == "seat_1"
     assert calibration.table.unit.value == "mm"
@@ -224,7 +224,7 @@ def test_load_calibration_authoring_from_json_file(tmp_path):
     path = tmp_path / "authoring.json"
     path.write_text(json.dumps(VALID_AUTHORING))
     calibration = load_calibration_authoring(path)
-    assert calibration.schema_version == "1.0"
+    assert calibration.schema_version == "1.1"
 
 
 def test_load_calibration_authoring_invalid_json_raises(tmp_path):
@@ -253,7 +253,7 @@ def test_load_calibration_authoring_missing_file_raises_value_error(tmp_path):
 
 def test_valid_runtime_loads():
     calibration = CalibrationRuntime.model_validate(VALID_RUNTIME)
-    assert calibration.schema_version == "1.0"
+    assert calibration.schema_version == "1.1"
     assert calibration.homography.forward == IDENTITY_MATRIX
     assert calibration.homography.inverse == IDENTITY_MATRIX
 
@@ -315,7 +315,7 @@ def test_load_calibration_runtime_from_json_file(tmp_path):
     path = tmp_path / "runtime.json"
     path.write_text(json.dumps(VALID_RUNTIME))
     calibration = load_calibration_runtime(path)
-    assert calibration.schema_version == "1.0"
+    assert calibration.schema_version == "1.1"
 
 
 def test_load_calibration_runtime_schema_violation_raises(tmp_path):

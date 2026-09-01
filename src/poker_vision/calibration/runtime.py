@@ -20,11 +20,13 @@ from poker_vision.calibration.homography import HomographyMatrix
 from poker_vision.calibration.zones import CalibrationGeometryModel
 from poker_vision.config import Resolution
 
-CALIBRATION_RUNTIME_SCHEMA_VERSION: Literal["1.0"] = "1.0"
+# See CALIBRATION_AUTHORING_SCHEMA_VERSION's comment (authoring.py) -- same
+# breaking change (new required card_dealer_seat_id field), same reason.
+CALIBRATION_RUNTIME_SCHEMA_VERSION: Literal["1.1"] = "1.1"
 
 
 class CalibrationRuntime(CalibrationGeometryModel):
-    schema_version: Literal["1.0"]
+    schema_version: Literal["1.1"]
     table_id: str = Field(min_length=1)
     based_on: str = Field(
         min_length=1, description="Identifier/path of the source CalibrationAuthoring"

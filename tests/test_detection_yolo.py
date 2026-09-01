@@ -16,7 +16,7 @@ INVERSE = [[0.5, 0.0, -5.0], [0.0, 1.0 / 3.0, -20.0 / 3.0], [0.0, 0.0, 1.0]]
 
 def _runtime() -> CalibrationRuntime:
     payload = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "table_id": "test_table",
         "based_on": "calibration/instance.json",
         "inference_resolution": {"width": 1920, "height": 1080},

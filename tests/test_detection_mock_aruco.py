@@ -72,7 +72,7 @@ IMAGE_SIZE = 1920, 1080  # width, height
 
 def _runtime() -> CalibrationRuntime:
     payload = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "table_id": "test_table",
         "based_on": "calibration/instance.json",
         "inference_resolution": {"width": IMAGE_SIZE[0], "height": IMAGE_SIZE[1]},

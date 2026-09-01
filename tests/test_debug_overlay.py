@@ -54,7 +54,7 @@ BOARD_ZONE = _polygon((150, 300), (250, 300), (250, 350), (150, 350))
 DEALER_AREA = _polygon((300, 300), (350, 300), (350, 350), (300, 350))
 
 CALIBRATION = CalibrationRuntime(
-    schema_version="1.0",
+    schema_version="1.1",
     table_id="test_table",
     based_on="test",
     inference_resolution=Resolution(width=1920, height=1080),
