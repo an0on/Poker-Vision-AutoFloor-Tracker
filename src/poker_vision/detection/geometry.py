@@ -9,23 +9,21 @@ route through it so all detectors agree on the same method.
 transform itself, applied here in the detection stage so nothing behind it
 ever sees pixel coordinates (REQ-5). `HomographyMatrix.forward` is defined
 for *undistorted* pixel coordinates (see calibration/homography.py), so both
-functions undistort via the calibration's camera/distortion parameters
-before applying it -- REQ-8 owns image-level undistortion and the CLI that
-bundles it with the homography into one authoring stage, but a raw
-detector's per-point pixel coordinates still need this correction wherever
-the homography is applied, so it happens here too.
+functions undistort via `calibration.undistort` (shared with `calib compile`,
+REQ-9, which undistorts the operator's authored correspondence points the
+same way before solving the homography) before applying it -- a raw
+detector's per-point pixel coordinates still need this correction on every
+frame, so it happens here too, not just once at compile time.
 """
 
 from __future__ import annotations
 
 import math
 
-import cv2
-import numpy as np
-
 from poker_vision.calibration.camera import CameraIntrinsics, DistortionCoefficients
 from poker_vision.calibration.geometry import Matrix3x3, PixelPoint, TablePoint
 from poker_vision.calibration.homography import HomographyMatrix
+from poker_vision.calibration.undistort import distort_points, undistort_points
 from poker_vision.detection.models import TableBoundingBox
 
 PixelBox = tuple[float, float, float, float]
@@ -56,7 +54,7 @@ def apply_homography_to_point(
     distortion: DistortionCoefficients,
 ) -> TablePoint:
     """Undistort one pixel-space point, then map it onto the table plane."""
-    ((ux, uy),) = _undistort_points([(point.x, point.y)], camera, distortion)
+    ((ux, uy),) = undistort_points([(point.x, point.y)], camera, distortion)
     x, y = _apply_matrix(homography.forward, ux, uy)
     return TablePoint(x=x, y=y)
 
@@ -81,7 +79,7 @@ def apply_inverse_homography_to_point(
     path in `Detector.detect()`.
     """
     ux, uy = _apply_matrix(homography.inverse, point.x, point.y)
-    ((dx, dy),) = _distort_points([(ux, uy)], camera, distortion)
+    ((dx, dy),) = distort_points([(ux, uy)], camera, distortion)
     return PixelPoint(x=dx, y=dy)
 
 
@@ -109,7 +107,7 @@ def transform_box_to_table(
     calibration and a real detector are in play.
     """
     perimeter = _sample_box_perimeter(box)
-    undistorted = _undistort_points(perimeter, camera, distortion)
+    undistorted = undistort_points(perimeter, camera, distortion)
     transformed = [_apply_matrix(homography.forward, x, y) for x, y in undistorted]
     xs = [x for x, _ in transformed]
     ys = [y for _, y in transformed]
@@ -131,63 +129,6 @@ def _sample_box_perimeter(
         points.append((x1, y1 + t * (y2 - y1)))  # left edge
         points.append((x2, y1 + t * (y2 - y1)))  # right edge
     return points
-
-
-def _camera_matrix(camera: CameraIntrinsics) -> np.ndarray:
-    return np.array(
-        [[camera.fx, 0.0, camera.cx], [0.0, camera.fy, camera.cy], [0.0, 0.0, 1.0]],
-        dtype=np.float64,
-    )
-
-
-def _distortion_vector(distortion: DistortionCoefficients) -> np.ndarray:
-    return np.array(
-        [distortion.k1, distortion.k2, distortion.p1, distortion.p2, distortion.k3],
-        dtype=np.float64,
-    )
-
-
-def _undistort_points(
-    points: list[tuple[float, float]],
-    camera: CameraIntrinsics,
-    distortion: DistortionCoefficients,
-) -> list[tuple[float, float]]:
-    """Undo lens distortion, returning points back in pixel units (not normalized)."""
-    src = np.array([[list(p)] for p in points], dtype=np.float64)
-    camera_matrix = _camera_matrix(camera)
-    # P=camera_matrix re-projects into the same pixel units the homography
-    # was solved against, instead of cv2's default normalized coordinates.
-    undistorted = cv2.undistortPoints(
-        src, camera_matrix, _distortion_vector(distortion), P=camera_matrix
-    )
-    return [(float(p[0][0]), float(p[0][1])) for p in undistorted]
-
-
-def _distort_points(
-    points: list[tuple[float, float]],
-    camera: CameraIntrinsics,
-    distortion: DistortionCoefficients,
-) -> list[tuple[float, float]]:
-    """Apply lens distortion forward: the exact inverse of `_undistort_points`.
-
-    cv2 has no direct "distort points" call. The standard workaround: treat
-    each undistorted pixel as a normalized point at z=1 and reproject it
-    with `cv2.projectPoints`, which applies the distortion model forward
-    (a closed-form polynomial, not an iterative solve) before re-applying
-    the camera matrix -- unlike `cv2.undistortPoints`, which iterates to
-    invert that same polynomial.
-    """
-    camera_matrix = _camera_matrix(camera)
-    object_points = np.array(
-        [[[(x - camera.cx) / camera.fx, (y - camera.cy) / camera.fy, 1.0]] for x, y in points],
-        dtype=np.float64,
-    )
-    rvec = np.zeros(3, dtype=np.float64)
-    tvec = np.zeros(3, dtype=np.float64)
-    projected, _ = cv2.projectPoints(
-        object_points, rvec, tvec, camera_matrix, _distortion_vector(distortion)
-    )
-    return [(float(p[0][0]), float(p[0][1])) for p in projected]
 
 
 def _apply_matrix(matrix: Matrix3x3, x: float, y: float) -> tuple[float, float]:
