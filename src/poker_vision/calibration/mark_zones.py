@@ -208,18 +208,24 @@ def _to_table_polygon(points: list[Point]) -> TablePolygon:
 
 
 def _identity_homography_from_outer_oval(
-    outer_oval: tuple[ArcClick, ArcClick],
+    outer_oval: tuple[ArcClick, ArcClick], arc_samples: int
 ) -> HomographyCorrespondences:
-    """4 correspondence points for `calib compile` to solve (REQ-9).
+    """Correspondence points for `calib compile` to solve (REQ-9).
 
     Table coordinates equal photo pixel coordinates here (see module
-    docstring), so `image_point == table_point` for every correspondence;
-    the outer oval's 4 already-clicked tangent points are reused as those
-    correspondences rather than inventing new ones, since they're already
-    well-spread reference points around the table.
+    docstring), so `image_point == table_point` for every correspondence.
+    Uses every point of the outer oval's own sampled polygon (its 2
+    tangent points *and* the arc points in between, i.e. the same points
+    `build_oval_polygon` would use for the shape itself) rather than just
+    the 4 tangent points: the operator's arc-center/radius clicks would
+    otherwise be collected and then silently thrown away, changing
+    nothing about the output. Numerically this is still an exact identity
+    (every correspondence has image_point == table_point, so the least-
+    squares DLT solve has zero residual regardless of point count) --
+    the difference is that the marked curvature now actually feeds the
+    computed homography instead of being discarded.
     """
-    end_a, end_b = outer_oval
-    points = [end_a.start, end_a.end, end_b.start, end_b.end]
+    points = build_oval_polygon(*outer_oval, arc_samples=arc_samples)
     return HomographyCorrespondences(
         points=[
             HomographyPointCorrespondence(
@@ -243,7 +249,22 @@ def build_authoring_from_marked_zones(
     would reject anyway (degenerate polygons, chip_zone escaping its
     player_area, ...) -- there is no separate "skip validation" path here,
     same as every other `calib` entry point (see `cli.py`'s docstring).
+
+    `chip_zone_shrink_factor` must be in `(0, 1]`: outside that range this
+    isn't a "shrink" at all -- 0 collapses every chip_zone to a single
+    point (rejected downstream anyway, as a degenerate `TablePolygon`), a
+    negative factor reflects each polygon through its own centroid (for a
+    convex seat wedge, that reflection can still land fully inside
+    `player_area`, so REQ-11 alone wouldn't catch it -- a "valid-looking"
+    chip_zone on the wrong side of the seat), and anything above 1 expands
+    rather than shrinks, which REQ-11 does catch, but only as a confusing
+    "chip_zone not contained in player_area" error instead of a clear one
+    naming the actual mistake.
     """
+    if not (0 < chip_zone_shrink_factor <= 1):
+        raise ValueError(
+            f"chip_zone_shrink_factor must be in (0, 1], got {chip_zone_shrink_factor}"
+        )
     seat_ids = number_seats_clockwise(marked.seat_polygons, marked.dealer_seat_key)
     seats = [
         CalibrationSeat(
@@ -276,7 +297,7 @@ def build_authoring_from_marked_zones(
             cy=height / 2.0,
         ),
         distortion=DistortionCoefficients(),
-        homography=_identity_homography_from_outer_oval(marked.outer_oval),
+        homography=_identity_homography_from_outer_oval(marked.outer_oval, arc_samples),
         table={"width": float(width), "height": float(height), "unit": TableUnit.MM},
         seats=seats,
         zones=GlobalZones(board_zone=board_zone, dealer_area=dealer_area),

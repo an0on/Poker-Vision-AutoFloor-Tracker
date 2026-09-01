@@ -188,3 +188,57 @@ def test_build_authoring_is_deterministic():
     a = build_authoring_from_marked_zones(_small_marked_zones(), table_id="t")
     b = build_authoring_from_marked_zones(_small_marked_zones(), table_id="t")
     assert a.model_dump() == b.model_dump()
+
+
+# Codex review finding (P2): the outer oval's clicked radius/curvature must
+# actually influence the output -- not be collected and then discarded,
+# leaving only its 4 tangent points to matter.
+
+
+def test_build_authoring_homography_uses_full_outer_oval_curve():
+    base = _small_marked_zones()
+    wider = MarkedZones(
+        seat_polygons=base.seat_polygons,
+        dealer_seat_key=base.dealer_seat_key,
+        board_zone_points=base.board_zone_points,
+        inner_oval=base.inner_oval,
+        # Same 4 tangent points as base.outer_oval, but a much larger
+        # radius/center for each end -- if only the tangent points were
+        # used, this would be indistinguishable from `base`.
+        outer_oval=(
+            ArcClick(start=(-140, -140), center=(-500, 0), end=(-140, 140)),
+            ArcClick(start=(140, 140), center=(500, 0), end=(140, -140)),
+        ),
+        image_size=base.image_size,
+    )
+
+    authoring_base = build_authoring_from_marked_zones(base, table_id="t")
+    authoring_wider = build_authoring_from_marked_zones(wider, table_id="t")
+
+    assert authoring_base.homography.points != authoring_wider.homography.points
+    # Every correspondence is still image_point == table_point (identity).
+    for correspondence in authoring_wider.homography.points:
+        assert correspondence.image_point.x == correspondence.table_point.x
+        assert correspondence.image_point.y == correspondence.table_point.y
+
+
+@pytest.mark.parametrize("bad_factor", [0.0, -0.5, 1.5])
+def test_build_authoring_rejects_out_of_range_chip_zone_shrink_factor(bad_factor):
+    with pytest.raises(ValueError, match="chip_zone_shrink_factor"):
+        build_authoring_from_marked_zones(
+            _small_marked_zones(), table_id="t", chip_zone_shrink_factor=bad_factor
+        )
+
+
+def test_build_authoring_accepts_shrink_factor_of_exactly_one():
+    # chip_zone == player_area is unusual but valid (REQ-11 allows touching
+    # boundaries) -- 1.0 is the upper edge of the accepted range, not past it.
+    authoring = build_authoring_from_marked_zones(
+        _small_marked_zones(), table_id="t", chip_zone_shrink_factor=1.0
+    )
+    seat = authoring.seats[0]
+    for chip_point, player_point in zip(
+        seat.zones.chip_zone.points, seat.zones.player_area.points, strict=True
+    ):
+        assert chip_point.x == pytest.approx(player_point.x)
+        assert chip_point.y == pytest.approx(player_point.y)
