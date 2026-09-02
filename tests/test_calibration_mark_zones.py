@@ -98,6 +98,39 @@ def _small_marked_zones() -> MarkedZones:
     )
 
 
+# Codex review finding (P1): anchoring a neighbour clip's cut line only on
+# a seat's own inner-side points fixes where the line sits, but not which
+# vertices fall on which side of it -- an outer, rail-facing corner can
+# still measure closer to a given neighbour's clip direction than the
+# seat's own inner points do, for a sufficiently tapered wedge, and get
+# clipped away regardless of the anchor restriction. Reproduced directly
+# from the repo owner's real 10-seat click session (one wedge near the
+# table's curved end) rather than a constructed worst case -- table_centroid
+# and the neighbour's centroid below are that real session's actual values.
+_TAPERED_SEAT = [
+    (1586.88, 662.4),
+    (1788.48, 1036.8),
+    (2350.08, 1028.16),
+    (2540.16, 630.72),
+    (1589.76, 659.52),
+]
+_TAPERED_SEAT_TABLE_CENTROID = (2097.634968067227, 1333.7083966386556)
+_TAPERED_SEAT_NEIGHBOR_CENTROID = (1129.6, 779.52)
+
+
+def test_safe_chip_zone_never_removes_a_tapered_seats_outer_points():
+    from poker_vision.calibration.mark_zones import _outer_points, _safe_chip_zone
+
+    zone = _safe_chip_zone(
+        _TAPERED_SEAT,
+        _TAPERED_SEAT_TABLE_CENTROID,
+        [(_TAPERED_SEAT_NEIGHBOR_CENTROID, 10.0)],
+        10.0,
+    )
+    outer = _outer_points(_TAPERED_SEAT, _TAPERED_SEAT_TABLE_CENTROID)
+    assert all(point in zone for point in outer)
+
+
 def test_build_authoring_produces_valid_calibration():
     authoring = build_authoring_from_marked_zones(_small_marked_zones(), table_id="test_table")
     assert {s.seat_id for s in authoring.seats} == {"seat_1", "seat_2", "seat_3", "seat_4"}

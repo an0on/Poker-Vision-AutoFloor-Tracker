@@ -289,6 +289,44 @@ _MAX_CHIP_ZONE_INSET_RETRIES = 10
 _MAX_OVERLAP_ESCALATIONS = 6
 
 
+def _outer_points(player_area_points: list[Point], table_centroid: Point) -> list[Point]:
+    """The farther half of `player_area_points` by distance to `table_centroid`
+    -- the rail-facing points a chip_zone must always keep untouched (REQ-7).
+
+    Same threshold `_derive_chip_zone` itself uses to pick which points a
+    neighbour clip may anchor on (its own inner half); kept as a separate
+    function here since `_outer_points_preserved` needs it independently of
+    any single clip call.
+    """
+    distances = [_dist(p, table_centroid) for p in player_area_points]
+    threshold = (min(distances) + max(distances)) / 2.0
+    return [p for p, d in zip(player_area_points, distances, strict=True) if d > threshold]
+
+
+def _outer_points_preserved(
+    player_area_points: list[Point], zone_points: list[Point], table_centroid: Point
+) -> bool:
+    """True if every rail-facing point of `player_area_points` survives
+    unchanged in `zone_points` (REQ-7's "outer edge stays at full extent").
+
+    Anchoring a neighbour clip's cut line only on a seat's own inner-side
+    points (see `_derive_chip_zone`) fixes *where* that line sits, but not
+    which vertices end up on which side of it: for an asymmetric or
+    tapered wedge, an outer, rail-facing corner can still measure closer to
+    a given neighbour (along that neighbour's own clip direction) than the
+    seat's own inner points do, and get clipped away regardless of the
+    anchor restriction. Rather than patch the clip to special-case outer
+    points (risking a different correctness bug -- an outer point forced
+    to count as "inside" a half-plane it geometrically isn't can produce a
+    bogus synthetic edge, not just a preserved one), this checks the
+    actual outcome and lets `_safe_chip_zone`'s existing retry back off
+    until it no longer happens, the same way it already backs off for
+    containment failures.
+    """
+    zone_set = set(zone_points)
+    return all(p in zone_set for p in _outer_points(player_area_points, table_centroid))
+
+
 def _safe_chip_zone(
     player_area_points: list[Point],
     table_centroid: Point,
@@ -296,28 +334,29 @@ def _safe_chip_zone(
     inset_pixels: float,
 ) -> list[Point]:
     """`_derive_chip_zone`, backing off to smaller insets if the requested
-    ones don't actually fit this specific wedge (REQ-11).
+    ones don't actually fit this specific wedge (REQ-11 containment, and
+    REQ-7's "outer edge stays untouched").
 
     A single straight cut line is exact for a convex wedge, but real click
     sessions occasionally produce a seat polygon that's slightly concave or
     has a near-self-touching vertex (an operator's dense curve-tracing
     meeting the next straight run at a shallow angle) -- for those, a large
     inset can legitimately clip past a local pinch in the shape and end up
-    outside `player_area` (or clip the wedge away to nothing), even though
-    the exact same operation is fine for every other, better-behaved seat
-    at the table. Scaling every inset here -- the inner-edge one and every
-    entry of `neighbor_clips`, together, by the same factor -- down by half
-    up to `_MAX_CHIP_ZONE_INSET_RETRIES` times, re-validating with the same
-    `polygon_contains` check REQ-11 itself uses, finds a safe combination
-    for that one seat automatically, rather than either failing the whole
+    outside `player_area` (or clip the wedge away to nothing, or eat into
+    a rail corner -- see `_outer_points_preserved`), even though the exact
+    same operation is fine for every other, better-behaved seat at the
+    table. Scaling every inset here -- the inner-edge one and every entry
+    of `neighbor_clips`, together, by the same factor -- down by half up to
+    `_MAX_CHIP_ZONE_INSET_RETRIES` times, re-validating with the same
+    checks REQ-7/REQ-11 themselves apply, finds a safe combination for
+    that one seat automatically, rather than either failing the whole
     session over one awkward wedge or silently writing an invalid
-    `chip_zone` that would fail REQ-11 anyway. Scaling every clip together
-    (not just the inner one) matters once `neighbor_clips`' insets can be
-    escalated well past `inset_pixels` by `_compute_all_chip_zones`'s own
-    overlap resolution -- a seat can turn out too small for *that*
-    combination even when the plain, unescalated inset would have been
-    fine, and only shrinking the inner clip wouldn't reach the actual
-    cause.
+    `chip_zone`. Scaling every clip together (not just the inner one)
+    matters once `neighbor_clips`' insets can be escalated well past
+    `inset_pixels` by `_compute_all_chip_zones`'s own overlap resolution --
+    a seat can turn out too small for *that* combination even when the
+    plain, unescalated inset would have been fine, and only shrinking the
+    inner clip wouldn't reach the actual cause.
     """
     scale = 1.0
     for _ in range(_MAX_CHIP_ZONE_INSET_RETRIES):
@@ -335,12 +374,38 @@ def _safe_chip_zone(
         except ValidationError:
             scale /= 2.0
             continue
-        if polygon_contains(player_area, zone):
+        if polygon_contains(player_area, zone) and _outer_points_preserved(
+            player_area_points, zone_points, table_centroid
+        ):
             return zone_points
         scale /= 2.0
-    # Every retry failed (pathological wedge shape): return the original,
-    # unscaled result and let REQ-11's own validation in
-    # `build_authoring_from_marked_zones` reject it with its usual clear
+
+    # Every scale retried and still failed: for a genuinely tapered wedge,
+    # this can be a specific neighbour's own clip direction being
+    # incompatible with keeping this seat's outer points, at *any* inset
+    # down to zero -- confirmed on real data (one wedge near the table's
+    # curved end, whose outer corner sits closer to one neighbour's
+    # direction than its own inner points do). Shrinking further can't
+    # fix that; dropping just the offending clip(s) can, since the other
+    # side's own clip (or `_compute_all_chip_zones`'s overlap escalation)
+    # is what actually keeps that boundary separated in that case, not
+    # this seat's side of it.
+    surviving_clips = [
+        clip
+        for clip in neighbor_clips
+        if _outer_points_preserved(
+            player_area_points,
+            _derive_chip_zone(player_area_points, table_centroid, [clip], 0.0),
+            table_centroid,
+        )
+    ]
+    if len(surviving_clips) < len(neighbor_clips):
+        return _safe_chip_zone(player_area_points, table_centroid, surviving_clips, inset_pixels)
+
+    # Every retry failed and no single clip is individually at fault
+    # (pathological wedge shape either way): return the original, unscaled
+    # result and let REQ-11's own validation (or the outer-edge check in
+    # `build_authoring_from_marked_zones`) reject it with its usual clear
     # error, rather than silently falling back to something unrequested.
     return _derive_chip_zone(player_area_points, table_centroid, neighbor_clips, inset_pixels)
 
@@ -566,6 +631,23 @@ def build_authoring_from_marked_zones(
     chip_zones = _compute_all_chip_zones(
         marked.seat_polygons, table_centroid, neighbor_keys, chip_zone_inset_pixels
     )
+    # _safe_chip_zone already retries each seat down to a smaller inset
+    # when a neighbour clip eats into that seat's own rail-facing points
+    # (see `_outer_points_preserved`), but that backoff can't help a seat
+    # whose outer points sit closer to a neighbour's clip direction than
+    # its own inner points do even at zero inset -- a real, if narrow,
+    # possibility for an unusually tapered wedge, not fully ruled out by
+    # anchoring alone. Checked explicitly here rather than left to REQ-11
+    # (which has no rule for "the outer edge stayed untouched" -- a
+    # shrunk-but-still-valid chip_zone would otherwise pass silently).
+    for key, points in marked.seat_polygons.items():
+        if not _outer_points_preserved(points, chip_zones[key], table_centroid):
+            raise ValueError(
+                f"seat '{key}': chip_zone_inset_pixels={chip_zone_inset_pixels} clips into this "
+                "seat's own rail-facing (outer) edge even at the smallest retried inset -- "
+                "this wedge's shape is too tapered for the requested inset; try a smaller "
+                "chip_zone_inset_pixels"
+            )
     seats = [
         CalibrationSeat(
             seat_id=seat_ids[key],
