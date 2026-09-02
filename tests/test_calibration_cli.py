@@ -430,11 +430,11 @@ def test_full_workflow_create_edit_validate_compile(tmp_path):
 def test_mark_zones_forwards_parsed_arguments(tmp_path, monkeypatch):
     captured: dict[str, object] = {}
 
-    def fake_run_interactive_mark_zones(*, image_path, out_path, table_id, chip_zone_shrink_factor):
+    def fake_run_interactive_mark_zones(*, image_path, out_path, table_id, chip_zone_inset_pixels):
         captured["image_path"] = image_path
         captured["out_path"] = out_path
         captured["table_id"] = table_id
-        captured["chip_zone_shrink_factor"] = chip_zone_shrink_factor
+        captured["chip_zone_inset_pixels"] = chip_zone_inset_pixels
         return 0
 
     monkeypatch.setattr(
@@ -452,8 +452,8 @@ def test_mark_zones_forwards_parsed_arguments(tmp_path, monkeypatch):
             str(out_path),
             "--table-id",
             "dopo_table",
-            "--chip-zone-shrink-factor",
-            "0.4",
+            "--chip-zone-inset-pixels",
+            "25",
         ]
     )
     assert exit_code == 0
@@ -461,11 +461,11 @@ def test_mark_zones_forwards_parsed_arguments(tmp_path, monkeypatch):
         "image_path": image_path,
         "out_path": out_path,
         "table_id": "dopo_table",
-        "chip_zone_shrink_factor": 0.4,
+        "chip_zone_inset_pixels": 25.0,
     }
 
 
-def test_mark_zones_default_chip_zone_shrink_factor(tmp_path, monkeypatch):
+def test_mark_zones_default_chip_zone_inset_pixels(tmp_path, monkeypatch):
     captured: dict[str, object] = {}
     monkeypatch.setattr(
         "poker_vision.calibration.cli.run_interactive_mark_zones",
@@ -482,4 +482,4 @@ def test_mark_zones_default_chip_zone_shrink_factor(tmp_path, monkeypatch):
             "dopo_table",
         ]
     )
-    assert captured["chip_zone_shrink_factor"] == pytest.approx(0.5)
+    assert captured["chip_zone_inset_pixels"] == pytest.approx(40.0)

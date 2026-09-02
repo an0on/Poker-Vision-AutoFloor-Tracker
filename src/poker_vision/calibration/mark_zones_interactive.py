@@ -26,7 +26,7 @@ from pydantic import ValidationError
 from poker_vision.calibration.authoring import CalibrationAuthoring, write_calibration_authoring
 from poker_vision.calibration.compile import compile_calibration
 from poker_vision.calibration.mark_zones import (
-    DEFAULT_CHIP_ZONE_SHRINK_FACTOR,
+    DEFAULT_CHIP_ZONE_INSET_PIXELS,
     Point,
     build_authoring_from_marked_zones,
 )
@@ -125,7 +125,7 @@ def run_interactive_mark_zones(
     image_path: Path,
     out_path: Path,
     table_id: str,
-    chip_zone_shrink_factor: float = DEFAULT_CHIP_ZONE_SHRINK_FACTOR,
+    chip_zone_inset_pixels: float = DEFAULT_CHIP_ZONE_INSET_PIXELS,
 ) -> int:
     """Open `image_path` in a click-to-mark window and write the resulting
     `CalibrationAuthoring` to `out_path` on save (REQ-10a). Returns an exit
@@ -190,7 +190,7 @@ def run_interactive_mark_zones(
     try:
         marked = session.build()
         authoring = build_authoring_from_marked_zones(
-            marked, table_id=table_id, chip_zone_shrink_factor=chip_zone_shrink_factor
+            marked, table_id=table_id, chip_zone_inset_pixels=chip_zone_inset_pixels
         )
     except (ValueError, ValidationError) as exc:
         print(f"mark-zones: {exc}", file=sys.stderr)
