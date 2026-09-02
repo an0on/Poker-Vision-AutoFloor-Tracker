@@ -1,9 +1,9 @@
 """Click-collection state machine for `calib mark-zones` (REQ-10a).
 
 Deliberately has no OpenCV/display dependency: `ClickSession` only reacts to
-abstract `add_point`/`undo`/`finish_polygon` calls and exposes its current
-step + collected state for a caller to render. This is what makes it
-unit-testable without a display -- the actual interactive tool
+abstract `add_point`/`undo`/`finish_polygon`/`finish_inner_oval` calls and
+exposes its current step + collected state for a caller to render. This is
+what makes it unit-testable without a display -- the actual interactive tool
 (`mark_zones_interactive.py`) is a thin cv2 mouse-callback wrapper around
 it, and stays untested the way every other display-driving code in this
 project does (there is no headless CI display, REQ-39/41).
@@ -24,6 +24,7 @@ _MIN_POLYGON_POINTS = 3
 class Step(StrEnum):
     SEATS = auto()
     PICK_DEALER = auto()
+    INNER_OVAL = auto()
     BOARD_ZONE = auto()
     DONE = auto()
 
@@ -55,30 +56,50 @@ class ClickSession:
 
     `image_size` is fixed at construction (needed for the eventual
     `MarkedZones.image_size`); everything else accumulates as
-    `add_point`/`finish_polygon`/`pick_dealer_at` are called, in the fixed
-    step order `Step` lists. Raises `ValueError` for any call invalid in
-    the current step (e.g. `pick_dealer_at` before all 10 seats exist) --
-    callers (the interactive tool) are expected to only offer the actions
-    valid for `self.step`.
+    `add_point`/`finish_polygon`/`finish_inner_oval`/`pick_dealer_at` are
+    called, in the fixed step order `Step` lists. Raises `ValueError` for
+    any call invalid in the current step (e.g. `pick_dealer_at` before all
+    10 seats exist) -- callers (the interactive tool) are expected to only
+    offer the actions valid for `self.step`.
+
+    `INNER_OVAL` is a freehand trace (like a seat's `player_area`: click as
+    many points as needed along the real curve, `finish_inner_oval` when
+    done), not a parametrized arc -- a fixed 3-point "start, center, end"
+    scheme was tried first and turned out to be a fragile way to mark a
+    precise curve by hand: a wrongly-placed center click produces an
+    arbitrarily wrong radius with no way to sanity-check it before the
+    fact. Tracing points directly on the visible curve, the same way an
+    operator already traces each seat's own outer rail curve, has no
+    equivalent failure mode -- a mis-clicked point only nudges the
+    boundary a little.
     """
 
     image_size: tuple[int, int]
     step: Step = Step.SEATS
     seats: dict[str, list[Point]] = field(default_factory=dict)
     dealer_seat_key: str | None = None
+    inner_oval_points: list[Point] = field(default_factory=list)
     board_zone_points: list[Point] = field(default_factory=list)
     _current_polygon: list[Point] = field(default_factory=list)
     _next_seat_number: int = 1
 
     @property
     def current_polygon(self) -> list[Point]:
-        """The in-progress seat polygon's points so far (SEATS step only; empty otherwise)."""
-        return list(self._current_polygon)
+        """The in-progress freehand trace for whichever step is collecting
+        one (SEATS or INNER_OVAL); empty otherwise.
+        """
+        if self.step is Step.SEATS:
+            return list(self._current_polygon)
+        if self.step is Step.INNER_OVAL:
+            return list(self.inner_oval_points)
+        return []
 
     def add_point(self, point: Point) -> None:
         """Add one clicked point to whatever the current step is collecting."""
         if self.step is Step.SEATS:
             self._current_polygon.append(point)
+        elif self.step is Step.INNER_OVAL:
+            self.inner_oval_points.append(point)
         elif self.step is Step.BOARD_ZONE:
             self.board_zone_points.append(point)
             if len(self.board_zone_points) == _BOARD_ZONE_CLICKS:
@@ -96,17 +117,21 @@ class ClickSession:
         transition, not silently no-op.
 
         Does *not* reopen an already-committed seat (SEATS -> PICK_DEALER,
-        `finish_polygon`) or the dealer pick itself (PICK_DEALER ->
-        BOARD_ZONE, `pick_dealer_at`): unlike BOARD_ZONE's last click,
-        both of those transitions are always an explicit, deliberate
-        action, never a last-click surprise, so there is no accidental
-        point to undo back to -- the operator had every chance to fix
-        their choice before confirming it.
+        `finish_polygon`), the dealer pick itself (PICK_DEALER ->
+        INNER_OVAL, `pick_dealer_at`), or the finished oval trace
+        (INNER_OVAL -> BOARD_ZONE, `finish_inner_oval`): unlike
+        BOARD_ZONE's last click, all three of those transitions are always
+        an explicit, deliberate action, never a last-click surprise, so
+        there is no accidental point to undo back to -- the operator had
+        every chance to fix their choice before confirming it.
         """
         if self.step is Step.SEATS and self._current_polygon:
             self._current_polygon.pop()
-        elif self.step is Step.BOARD_ZONE and self.board_zone_points:
-            self.board_zone_points.pop()
+        elif self.step is Step.INNER_OVAL and self.inner_oval_points:
+            self.inner_oval_points.pop()
+        elif self.step is Step.BOARD_ZONE:
+            if self.board_zone_points:
+                self.board_zone_points.pop()
         elif self.step is Step.DONE and self.board_zone_points:
             self.step = Step.BOARD_ZONE
             self.board_zone_points.pop()
@@ -137,9 +162,20 @@ class ClickSession:
         for key, polygon in self.seats.items():
             if _point_in_polygon(point, polygon):
                 self.dealer_seat_key = key
-                self.step = Step.BOARD_ZONE
+                self.step = Step.INNER_OVAL
                 return
         raise ValueError(f"{point} is not inside any marked seat")
+
+    def finish_inner_oval(self) -> None:
+        """Confirm the traced inner-oval boundary and move on (INNER_OVAL step only)."""
+        if self.step is not Step.INNER_OVAL:
+            raise ValueError(f"finish_inner_oval is only valid in step INNER_OVAL, not {self.step}")
+        if len(self.inner_oval_points) < _MIN_POLYGON_POINTS:
+            raise ValueError(
+                f"the inner oval needs at least {_MIN_POLYGON_POINTS} points, "
+                f"got {len(self.inner_oval_points)}"
+            )
+        self.step = Step.BOARD_ZONE
 
     def build(self) -> MarkedZones:
         """Assemble the completed session into a `MarkedZones` (REQ-10a).
@@ -152,6 +188,7 @@ class ClickSession:
         return MarkedZones(
             seat_polygons=dict(self.seats),
             dealer_seat_key=self.dealer_seat_key,
+            inner_oval_points=list(self.inner_oval_points),
             board_zone_points=list(self.board_zone_points),
             image_size=self.image_size,
         )

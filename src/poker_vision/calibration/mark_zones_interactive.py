@@ -9,9 +9,10 @@ server loop) has no direct test coverage either -- the logic that
 *matters* to get right lives in `mark_zones.py`/`mark_zones_session.py`,
 both fully unit-tested.
 
-Controls: left-click adds a point; Enter/Space finishes the current seat
-polygon (SEATS step); Backspace/'u' undoes the last point; 's' saves once
-the session reaches DONE; Esc aborts without writing anything.
+Controls: left-click adds a point; Enter/Space finishes the current
+freehand trace (SEATS step: the current seat polygon; INNER_OVAL step: the
+`dealer_area` boundary); Backspace/'u' undoes the last point; 's' saves
+once the session reaches DONE; Esc aborts without writing anything.
 """
 
 from __future__ import annotations
@@ -38,6 +39,8 @@ _WINDOW_NAME = "calib mark-zones"
 _COLOR_SEAT_DONE = (200, 120, 0)
 _COLOR_SEAT_CURRENT = (0, 255, 255)
 _COLOR_DEALER = (0, 0, 255)
+_COLOR_INNER_OVAL_CURRENT = (0, 200, 200)
+_COLOR_INNER_OVAL_DONE = (120, 120, 0)
 _COLOR_BOARD = (255, 0, 255)
 _COLOR_TEXT = (255, 255, 255)
 
@@ -60,6 +63,7 @@ _MAX_DISPLAY_DIMENSION = 1400
 _STEP_INSTRUCTIONS: dict[Step, str] = {
     Step.SEATS: "Click a seat's player_area corners, Enter/Space to finish it (need 10 seats)",
     Step.PICK_DEALER: "Click inside the seat that is the fixed card-dealer (Kartengeber) position",
+    Step.INNER_OVAL: "Trace dealer_area's inner boundary, Enter/Space when done",
     Step.BOARD_ZONE: "Click board_zone's 4 corners",
     Step.DONE: "Done -- 's' to save, Esc to discard",
 }
@@ -96,6 +100,12 @@ def _render_content(base_image: np.ndarray, session: ClickSession) -> np.ndarray
         _draw_polyline(image, points, color, closed=True)
     if session.step is Step.SEATS:
         _draw_polyline(image, session.current_polygon, _COLOR_SEAT_CURRENT, closed=False)
+
+    step_order = list(Step)
+    if session.step is Step.INNER_OVAL:
+        _draw_polyline(image, session.current_polygon, _COLOR_INNER_OVAL_CURRENT, closed=False)
+    elif step_order.index(session.step) > step_order.index(Step.INNER_OVAL):
+        _draw_polyline(image, session.inner_oval_points, _COLOR_INNER_OVAL_DONE, closed=True)
 
     if session.step is Step.BOARD_ZONE:
         _draw_polyline(image, session.board_zone_points, _COLOR_BOARD, closed=False)
@@ -175,9 +185,12 @@ def run_interactive_mark_zones(
             if key == _KEY_ESC:
                 print("mark-zones: aborted, nothing written", file=sys.stderr)
                 return 1
-            if key in (_KEY_ENTER, _KEY_SPACE) and session.step is Step.SEATS:
+            if key in (_KEY_ENTER, _KEY_SPACE):
                 try:
-                    session.finish_polygon()
+                    if session.step is Step.SEATS:
+                        session.finish_polygon()
+                    elif session.step is Step.INNER_OVAL:
+                        session.finish_inner_oval()
                 except ValueError as exc:
                     print(f"mark-zones: {exc}", file=sys.stderr)
             if key in (_KEY_BACKSPACE, ord("u")):

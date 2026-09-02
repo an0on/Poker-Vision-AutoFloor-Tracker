@@ -85,7 +85,7 @@ def test_pick_dealer_at_point_inside_a_seat_selects_it():
     cy = sum(p[1] for p in first_polygon) / 4
     session.pick_dealer_at((cx, cy))
     assert session.dealer_seat_key == first_key
-    assert session.step is Step.BOARD_ZONE
+    assert session.step is Step.INNER_OVAL
 
 
 def test_pick_dealer_at_point_outside_every_seat_rejected():
@@ -101,15 +101,66 @@ def test_pick_dealer_at_wrong_step_rejected():
         session.pick_dealer_at((0, 0))
 
 
-# --- BOARD_ZONE step ------------------------------------------------------------
+# --- INNER_OVAL step -------------------------------------------------------------
 
 
-def _session_at_board_zone() -> ClickSession:
+def _session_at_inner_oval() -> ClickSession:
     session = _fresh_session_with_all_seats()
     first_key, first_polygon = next(iter(session.seats.items()))
     cx = sum(p[0] for p in first_polygon) / 4
     cy = sum(p[1] for p in first_polygon) / 4
     session.pick_dealer_at((cx, cy))
+    return session
+
+
+def test_add_point_during_inner_oval_accumulates_into_current_polygon():
+    session = _session_at_inner_oval()
+    session.add_point((-5, -5))
+    session.add_point((5, -5))
+    assert session.current_polygon == [(-5, -5), (5, -5)]
+    assert session.step is Step.INNER_OVAL  # freehand -- no point-count auto-advance
+
+
+def test_finish_inner_oval_with_too_few_points_rejected():
+    session = _session_at_inner_oval()
+    session.add_point((0, 0))
+    session.add_point((10, 0))
+    with pytest.raises(ValueError, match="at least"):
+        session.finish_inner_oval()
+
+
+def test_finish_inner_oval_advances_to_board_zone():
+    session = _session_at_inner_oval()
+    trace = [(-5, -5), (5, -5), (5, 5), (-5, 5)]
+    for point in trace:
+        session.add_point(point)
+    session.finish_inner_oval()
+    assert session.step is Step.BOARD_ZONE
+    assert session.inner_oval_points == trace
+
+
+def test_finish_inner_oval_wrong_step_rejected():
+    session = ClickSession(image_size=(1000, 1000))
+    with pytest.raises(ValueError, match="only valid in step INNER_OVAL"):
+        session.finish_inner_oval()
+
+
+def test_undo_during_inner_oval_removes_last_point():
+    session = _session_at_inner_oval()
+    session.add_point((-5, -5))
+    session.add_point((5, -5))
+    session.undo()
+    assert session.inner_oval_points == [(-5, -5)]
+
+
+# --- BOARD_ZONE step ------------------------------------------------------------
+
+
+def _session_at_board_zone() -> ClickSession:
+    session = _session_at_inner_oval()
+    for point in [(-5, -5), (5, -5), (5, 5), (-5, 5)]:
+        session.add_point(point)
+    session.finish_inner_oval()
     return session
 
 
@@ -160,6 +211,7 @@ def test_full_session_reaches_done_and_builds():
     assert marked.image_size == (1000, 1000)
     assert len(marked.seat_polygons) == 10
     assert marked.dealer_seat_key in marked.seat_polygons
+    assert len(marked.inner_oval_points) == 4
     assert len(marked.board_zone_points) == 4
 
 

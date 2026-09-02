@@ -18,15 +18,16 @@ re-measuring anything either.
 
 Because table coordinates equal photo pixel coordinates here, the
 authoring's `homography` is an identity mapping, solved from the photo's
-own 4 corners -- see `_identity_homography_from_image_corners`. `dealer_area`
-(REQ-7's "Action Area", the inner-oval region) is likewise not clicked
-separately: `infer_inner_boundary_polygon` derives it from the seat
-polygons the operator already clicked, since two manual arc-center clicks
-per oval (originally REQ-10a's design) turned out to be a fragile way to
-mark a precise curve by hand in practice -- a wrongly-placed center click
-produces a wildly wrong radius with no way to visually sanity-check it
-before the fact, whereas both derivations here only ever use points
-already validated as real seat corners.
+own 4 corners -- see `_identity_homography_from_image_corners`; there is
+nothing an operator could usefully click for it (any >=4 non-degenerate
+points solve to the same identity matrix), unlike `dealer_area` (REQ-7's
+"Action Area", the inner-oval region), which *is* a freehand click trace
+(`MarkedZones.inner_oval_points`) -- a fixed 3-point "start, center, end"
+arc scheme was tried first and is a fragile way to mark a precise curve by
+hand: a wrongly-placed center click produces an arbitrarily wrong radius
+with no way to sanity-check it before the fact. Tracing points directly
+on the visible curve, the same way an operator already traces each seat's
+own outer rail curve, has no equivalent failure mode.
 """
 
 from __future__ import annotations
@@ -52,12 +53,14 @@ from poker_vision.config import Resolution
 
 Point = tuple[float, float]
 
-# Rough estimate of one felt-pattern diamond's width in the reference
-# photo's own pixel grid -- table coordinates are photo pixels here (see
-# module docstring), so this is a nominal per-photo default, not a
-# universal constant; pass a measured value via `chip_zone_inset_pixels`
-# once one is available for a given reference photo.
-DEFAULT_CHIP_ZONE_INSET_PIXELS = 40.0
+# Deliberately minimal: the operator wants chip-detection zones maximized,
+# not shrunk defensively -- this is just enough separation from a
+# neighbouring seat's chip_zone and from dealer_area to avoid ambiguity,
+# not a safety margin. Table coordinates are photo pixels here (see module
+# docstring), so this is a nominal per-photo default, not a universal
+# constant; pass a measured value via `chip_zone_inset_pixels` if one is
+# ever available for a given reference photo.
+DEFAULT_CHIP_ZONE_INSET_PIXELS = 10.0
 # See its one use in `_derive_chip_zone`: absorbs float64 rounding noise
 # from chained polygon-clip line intersections, several orders of
 # magnitude below anything visible at reference-photo pixel scale.
@@ -77,14 +80,16 @@ class MarkedZones:
     session (e.g. click order) -- deliberately *not* assumed to already be
     in clockwise physical order; `number_seats_clockwise` derives that
     itself from each polygon's centroid, so a scrambled click order can't
-    silently mis-number seats. There is no separate inner/outer-oval click
-    data: `build_authoring_from_marked_zones` derives both `dealer_area`
-    and the homography from `seat_polygons`/`image_size` alone (see this
-    module's docstring for why).
+    silently mis-number seats. `inner_oval_points` is a freehand trace of
+    the inner boundary (becomes `dealer_area` directly, unlike the
+    homography, which `build_authoring_from_marked_zones` derives from
+    `image_size` alone -- see this module's docstring for why the two
+    differ).
     """
 
     seat_polygons: dict[str, list[Point]]
     dealer_seat_key: str
+    inner_oval_points: list[Point]
     board_zone_points: list[Point]
     image_size: tuple[int, int]
 
@@ -424,45 +429,6 @@ def _table_centroid(seat_polygons: dict[str, list[Point]]) -> Point:
     )
 
 
-def infer_inner_boundary_polygon(seat_polygons: dict[str, list[Point]]) -> list[Point]:
-    """Derive `dealer_area` (REQ-7's "Action Area") from the already-clicked
-    seat wedges, instead of a separate manual oval-click step.
-
-    For each seat, its single corner closest to the table's overall centroid
-    is the one facing the board; collecting all ten and sorting them by
-    angle around the table centroid (the same technique
-    `number_seats_clockwise` uses to order seats) produces a simple,
-    star-shaped polygon following the true inner boundary.
-
-    One point per seat, not two: an earlier version took each seat's two
-    *closest* points, on the reasoning that adjacent wedges share that
-    boundary corner pair. That broke on a real elongated-oval table with
-    seats clicked at very different point densities (a wedge whose outer
-    rail curve was traced with a dozen points vs. a neighbour clicked as a
-    plain quadrilateral): "distance to one shared centroid" is not
-    monotonic with "how far towards the board" once a seat sits well off
-    to one side of that centroid along the table's long axis -- a genuine
-    outer, rail-side corner there can measure numerically closer to the
-    centroid than the seat's own true inner corner on the *other* side,
-    because the outer corner happens to sit more towards the middle of the
-    long axis. Concretely: a seat's rank-1-closest point was reliably its
-    true inner corner in that real data; its rank-2-closest point was not,
-    for exactly this reason. Using only the reliable rank-1 point trades a
-    little boundary resolution (one vertex per seat instead of two) for
-    correctness independent of per-seat click density or table elongation.
-    """
-    table_centroid = _table_centroid(seat_polygons)
-
-    inner_points = [
-        min(points, key=lambda p: _dist(p, table_centroid)) for points in seat_polygons.values()
-    ]
-
-    def angle(point: Point) -> float:
-        return math.atan2(point[1] - table_centroid[1], point[0] - table_centroid[0])
-
-    return sorted(inner_points, key=angle)
-
-
 def number_seats_clockwise(
     seat_polygons: dict[str, list[Point]], dealer_seat_key: str
 ) -> dict[str, str]:
@@ -611,9 +577,8 @@ def build_authoring_from_marked_zones(
         for key, points in marked.seat_polygons.items()
     ]
 
-    dealer_area_points = infer_inner_boundary_polygon(marked.seat_polygons)
     board_zone = _to_table_polygon(marked.board_zone_points)
-    dealer_area = _to_table_polygon(dealer_area_points)
+    dealer_area = _to_table_polygon(marked.inner_oval_points)
 
     width, height = marked.image_size
     resolution = Resolution(width=width, height=height)

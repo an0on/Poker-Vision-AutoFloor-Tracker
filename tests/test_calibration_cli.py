@@ -482,4 +482,4 @@ def test_mark_zones_default_chip_zone_inset_pixels(tmp_path, monkeypatch):
             "dopo_table",
         ]
     )
-    assert captured["chip_zone_inset_pixels"] == pytest.approx(40.0)
+    assert captured["chip_zone_inset_pixels"] == pytest.approx(10.0)

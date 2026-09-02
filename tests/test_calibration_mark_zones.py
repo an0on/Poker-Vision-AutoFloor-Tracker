@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from poker_vision.calibration.geometry import TablePoint, TablePolygon, polygon_signed_area
+from poker_vision.calibration.geometry import polygon_signed_area
 from poker_vision.calibration.mark_zones import (
     MarkedZones,
     build_authoring_from_marked_zones,
-    infer_inner_boundary_polygon,
     number_seats_clockwise,
 )
 
@@ -73,45 +72,6 @@ def test_number_seats_clockwise_independent_of_dict_order():
     )
 
 
-# --- infer_inner_boundary_polygon --------------------------------------------
-
-
-def test_infer_inner_boundary_polygon_picks_each_seats_closest_corner():
-    # COMPASS_SEATS (half=1.0, centered at +-10 on each axis) has a table
-    # centroid at (0, 0); for each square, two corners on the centroid-
-    # facing edge are ~9.05 units out (tied), the other two ~11.05 -- the
-    # single closest point must come from that near edge (whichever of the
-    # tied pair is first in click order), never the far one.
-    inner = infer_inner_boundary_polygon(COMPASS_SEATS)
-    assert set(inner) == {
-        (1.0, -9.0),  # north's inner edge
-        (9.0, -1.0),  # east's inner edge
-        (-1.0, 9.0),  # south's inner edge
-        (-9.0, -1.0),  # west's inner edge
-    }
-
-
-def test_infer_inner_boundary_polygon_is_simple_and_nondegenerate():
-    # Reuses TablePolygon's own REQ-11 validator instead of reimplementing
-    # simple/non-degenerate checks here: angle-sorting points around one
-    # shared centroid always yields a simple (star-shaped) polygon, but this
-    # confirms it for real, not just by construction argument.
-    inner = infer_inner_boundary_polygon(COMPASS_SEATS)
-    TablePolygon(points=[TablePoint(x=x, y=y) for x, y in inner])
-
-
-def test_infer_inner_boundary_polygon_independent_of_dict_order():
-    scrambled = {
-        "west": COMPASS_SEATS["west"],
-        "north": COMPASS_SEATS["north"],
-        "east": COMPASS_SEATS["east"],
-        "south": COMPASS_SEATS["south"],
-    }
-    assert set(infer_inner_boundary_polygon(scrambled)) == set(
-        infer_inner_boundary_polygon(COMPASS_SEATS)
-    )
-
-
 # --- build_authoring_from_marked_zones --------------------------------------
 
 
@@ -128,9 +88,11 @@ def _small_marked_zones() -> MarkedZones:
         "west": _square(-1000, 0, half=200),
     }
     board_zone = [(-100, -100), (100, -100), (100, 100), (-100, 100)]
+    inner_oval = _square(0, 0, half=150)
     return MarkedZones(
         seat_polygons=seats,
         dealer_seat_key="north",
+        inner_oval_points=inner_oval,
         board_zone_points=board_zone,
         image_size=(2000, 2000),
     )
@@ -194,14 +156,12 @@ def test_build_authoring_chip_zone_inset_of_zero_matches_player_area_area():
     assert chip_area == pytest.approx(player_area)
 
 
-def test_build_authoring_dealer_area_is_derived_from_seat_inner_corners():
-    authoring = build_authoring_from_marked_zones(_small_marked_zones(), table_id="t")
-    # infer_inner_boundary_polygon picks each seat's single corner closest
-    # to the table centroid (0, 0) -- for these seats (half=200, centers at
-    # +-1000), that's consistently one of the 800-units-out corners, never
-    # one of the 1200-units-out outer pair.
-    for point in authoring.zones.dealer_area.points:
-        assert max(abs(point.x), abs(point.y)) == pytest.approx(800.0)
+def test_build_authoring_dealer_area_is_the_clicked_inner_oval_trace():
+    marked = _small_marked_zones()
+    authoring = build_authoring_from_marked_zones(marked, table_id="t")
+    # dealer_area is exactly the operator's freehand inner-oval trace, not
+    # derived from the seat polygons -- REQ-10a's manual-click design.
+    assert [(p.x, p.y) for p in authoring.zones.dealer_area.points] == marked.inner_oval_points
 
 
 def test_build_authoring_is_deterministic():
