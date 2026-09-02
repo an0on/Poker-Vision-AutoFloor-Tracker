@@ -23,13 +23,16 @@ import cv2
 import numpy as np
 from pydantic import ValidationError
 
-from poker_vision.calibration.authoring import write_calibration_authoring
+from poker_vision.calibration.authoring import CalibrationAuthoring, write_calibration_authoring
+from poker_vision.calibration.compile import compile_calibration
 from poker_vision.calibration.mark_zones import (
     DEFAULT_CHIP_ZONE_SHRINK_FACTOR,
     Point,
     build_authoring_from_marked_zones,
+    oval_preview_polygon,
 )
 from poker_vision.calibration.mark_zones_session import ClickSession, Step
+from poker_vision.debug.overlay import draw_zones
 
 _WINDOW_NAME = "calib mark-zones"
 
@@ -99,16 +102,26 @@ def _render_content(base_image: np.ndarray, session: ClickSession) -> np.ndarray
     if session.step is Step.SEATS:
         _draw_polyline(image, session.current_polygon, _COLOR_SEAT_CURRENT, closed=False)
 
+    # `oval_preview_polygon` returns its input unchanged below 6 points (see
+    # its own docstring: an arc's direction can't be resolved from one end
+    # alone), so the CURRENT branches below are always still-open raw click
+    # points -- `add_point` advances `session.step` away from a CURRENT
+    # oval step in the same call that lands its 6th point, so by the time
+    # this renders, a still-CURRENT oval step never actually has all 6.
     step_order = list(Step)
     current_index = step_order.index(session.step)
     if session.step is Step.INNER_OVAL:
-        _draw_polyline(image, session.inner_oval_points, _COLOR_OVAL_CURRENT, closed=False)
+        preview = oval_preview_polygon(session.inner_oval_points)
+        _draw_polyline(image, preview, _COLOR_OVAL_CURRENT, closed=False)
     elif current_index > step_order.index(Step.INNER_OVAL):
-        _draw_polyline(image, session.inner_oval_points, _COLOR_OVAL_DONE, closed=False)
+        preview = oval_preview_polygon(session.inner_oval_points)
+        _draw_polyline(image, preview, _COLOR_OVAL_DONE, closed=True)
     if session.step is Step.OUTER_OVAL:
-        _draw_polyline(image, session.outer_oval_points, _COLOR_OVAL_CURRENT, closed=False)
+        preview = oval_preview_polygon(session.outer_oval_points)
+        _draw_polyline(image, preview, _COLOR_OVAL_CURRENT, closed=False)
     elif current_index > step_order.index(Step.OUTER_OVAL):
-        _draw_polyline(image, session.outer_oval_points, _COLOR_OVAL_DONE, closed=False)
+        preview = oval_preview_polygon(session.outer_oval_points)
+        _draw_polyline(image, preview, _COLOR_OVAL_DONE, closed=True)
 
     if session.step is Step.BOARD_ZONE:
         _draw_polyline(image, session.board_zone_points, _COLOR_BOARD, closed=False)
@@ -210,4 +223,41 @@ def run_interactive_mark_zones(
         return 1
     write_calibration_authoring(authoring, out_path)
     print(f"mark-zones: wrote '{out_path}'")
+    _show_and_save_result_preview(image, authoring, out_path)
     return 0
+
+
+def _show_and_save_result_preview(
+    image: np.ndarray, authoring: CalibrationAuthoring, out_path: Path
+) -> None:
+    """Render every final zone onto the original photo and show + save it.
+
+    Best-effort: `out_path` already holds the real calibration by the time
+    this runs (see caller), so a failure here (e.g. an unexpected geometry
+    edge case in `compile_calibration`) is reported but must not make the
+    already-successful `mark-zones` run look like it failed.
+    """
+    try:
+        runtime = compile_calibration(authoring, based_on=str(out_path))
+        preview = image.copy()
+        draw_zones(preview, runtime)
+    except (ValueError, cv2.error) as exc:
+        print(f"mark-zones: could not render result preview: {exc}", file=sys.stderr)
+        return
+
+    preview_path = out_path.with_name(f"{out_path.stem}_preview.png")
+    cv2.imwrite(str(preview_path), preview)
+    print(f"mark-zones: wrote result preview '{preview_path}'")
+
+    display_scale = min(1.0, _MAX_DISPLAY_DIMENSION / max(preview.shape[1], preview.shape[0]))
+    display = preview
+    if display_scale < 1.0:
+        display_size = (
+            round(preview.shape[1] * display_scale),
+            round(preview.shape[0] * display_scale),
+        )
+        display = cv2.resize(preview, display_size, interpolation=cv2.INTER_AREA)
+    cv2.imshow(_WINDOW_NAME, display)
+    print("mark-zones: showing result preview -- press any key to close")
+    cv2.waitKey(0)
+    cv2.destroyWindow(_WINDOW_NAME)

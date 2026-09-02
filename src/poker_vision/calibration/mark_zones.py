@@ -153,6 +153,34 @@ def build_oval_polygon(
     return arc_a + arc_b
 
 
+_OVAL_CLICKS_PER_END = 3
+_OVAL_CLICKS_TOTAL = _OVAL_CLICKS_PER_END * 2
+
+
+def oval_preview_polygon(
+    points: list[Point], arc_samples: int = DEFAULT_ARC_SAMPLE_COUNT
+) -> list[Point]:
+    """Best available preview for an in-progress or completed oval click sequence.
+
+    Returns `points` unchanged until both end-caps are fully clicked (6
+    points): `_arc_polyline` needs the *other* end's center to know which
+    of the two possible arc directions is "away" (the real curve, not the
+    short way cutting through the table's interior), so a lone end's 3
+    points can't be resolved into a curve yet. Once complete, returns the
+    true sampled stadium polygon (`build_oval_polygon`) -- the same points
+    that end up in the saved calibration -- instead of straight lines
+    connecting the 3 raw clicks (which visibly cut through the arc's own
+    center, nothing like the actual curve). Used by the interactive tool's
+    live preview so what the operator sees matches what gets saved.
+    """
+    if len(points) != _OVAL_CLICKS_TOTAL:
+        return points
+    a_start, a_center, a_end, b_start, b_center, b_end = points
+    end_a = ArcClick(start=a_start, center=a_center, end=a_end)
+    end_b = ArcClick(start=b_start, center=b_center, end=b_end)
+    return build_oval_polygon(end_a, end_b, arc_samples=arc_samples)
+
+
 def number_seats_clockwise(
     seat_polygons: dict[str, list[Point]], dealer_seat_key: str
 ) -> dict[str, str]:
