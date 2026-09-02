@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from poker_vision.calibration.geometry import polygon_signed_area
+from poker_vision.calibration.geometry import TablePoint, TablePolygon, polygon_signed_area
 from poker_vision.calibration.mark_zones import (
-    ArcClick,
     MarkedZones,
     build_authoring_from_marked_zones,
-    build_oval_polygon,
+    infer_inner_boundary_polygon,
     number_seats_clockwise,
-    oval_preview_polygon,
 )
 
 # --- number_seats_clockwise --------------------------------------------------
@@ -75,76 +73,42 @@ def test_number_seats_clockwise_independent_of_dict_order():
     )
 
 
-# --- build_oval_polygon ------------------------------------------------------
-
-# A simple stadium: two same-radius circles centered at (-100, 0) and
-# (100, 0), radius 50, straight sides at y = -50 and y = +50 (tangent
-# points already fall exactly on those lines for a symmetric stadium).
-LEFT_END = ArcClick(start=(-100, -50), center=(-100, 0), end=(-100, 50))
-RIGHT_END = ArcClick(start=(100, 50), center=(100, 0), end=(100, -50))
+# --- infer_inner_boundary_polygon --------------------------------------------
 
 
-def test_build_oval_polygon_is_closed_simple_and_nondegenerate():
-    points = build_oval_polygon(LEFT_END, RIGHT_END, arc_samples=16)
-    assert len(points) == 34  # 17 + 17 points, one shared pair of tangent points each end
-    # Non-zero area, i.e. not degenerate/collinear (mirrors TablePolygon's own check).
-    area = abs(
-        sum(
-            points[i][0] * points[(i + 1) % len(points)][1]
-            - points[(i + 1) % len(points)][0] * points[i][1]
-            for i in range(len(points))
-        )
-        / 2.0
+def test_infer_inner_boundary_polygon_picks_each_seats_two_closest_corners():
+    # COMPASS_SEATS (half=1.0, centered at +-10 on each axis) has a table
+    # centroid at (0, 0); for each square, the two corners on the
+    # centroid-facing edge are consistently ~9.05 units out, the other two
+    # ~11.05 -- the closest pair must be exactly the near edge, not a mix.
+    inner = infer_inner_boundary_polygon(COMPASS_SEATS)
+    assert set(inner) == {
+        (1.0, -9.0), (-1.0, -9.0),  # north's inner edge
+        (9.0, -1.0), (9.0, 1.0),  # east's inner edge
+        (-1.0, 9.0), (1.0, 9.0),  # south's inner edge
+        (-9.0, -1.0), (-9.0, 1.0),  # west's inner edge
+    }
+
+
+def test_infer_inner_boundary_polygon_is_simple_and_nondegenerate():
+    # Reuses TablePolygon's own REQ-11 validator instead of reimplementing
+    # simple/non-degenerate checks here: angle-sorting points around one
+    # shared centroid always yields a simple (star-shaped) polygon, but this
+    # confirms it for real, not just by construction argument.
+    inner = infer_inner_boundary_polygon(COMPASS_SEATS)
+    TablePolygon(points=[TablePoint(x=x, y=y) for x, y in inner])
+
+
+def test_infer_inner_boundary_polygon_independent_of_dict_order():
+    scrambled = {
+        "west": COMPASS_SEATS["west"],
+        "north": COMPASS_SEATS["north"],
+        "east": COMPASS_SEATS["east"],
+        "south": COMPASS_SEATS["south"],
+    }
+    assert set(infer_inner_boundary_polygon(scrambled)) == set(
+        infer_inner_boundary_polygon(COMPASS_SEATS)
     )
-    assert area > 0
-
-
-def test_build_oval_polygon_arc_bulges_outward_not_inward():
-    points = build_oval_polygon(LEFT_END, RIGHT_END, arc_samples=16)
-    # The left arc must bulge further left (more negative x) than either of
-    # its own tangent points -- confirms "the long way round", not the short
-    # arc that would cut through the table's interior between the two ends.
-    left_arc_xs = [x for x, y in points[:17]]
-    assert min(left_arc_xs) < -100 - 1e-6
-
-
-def test_build_oval_polygon_degenerate_center_on_point_raises():
-    bad = ArcClick(start=(0, 0), center=(0, 0), end=(0, 0))
-    with pytest.raises(ValueError, match="degenerate"):
-        build_oval_polygon(bad, RIGHT_END)
-
-
-# --- oval_preview_polygon -----------------------------------------------------
-
-# Flattened click order for LEFT_END/RIGHT_END: start, center, end, start, center, end.
-_SIX_CLICKS = [
-    LEFT_END.start, LEFT_END.center, LEFT_END.end,
-    RIGHT_END.start, RIGHT_END.center, RIGHT_END.end,
-]
-
-
-@pytest.mark.parametrize("count", [0, 1, 3, 5])
-def test_oval_preview_polygon_returns_raw_points_below_six(count):
-    # Below 6 points, an arc's direction can't be resolved from one end
-    # alone (needs the other end's center) -- must return the clicks as-is,
-    # not silently drop/alter them.
-    points = _SIX_CLICKS[:count]
-    assert oval_preview_polygon(points) == points
-
-
-def test_oval_preview_polygon_at_six_points_matches_build_oval_polygon():
-    assert oval_preview_polygon(_SIX_CLICKS, arc_samples=16) == build_oval_polygon(
-        LEFT_END, RIGHT_END, arc_samples=16
-    )
-
-
-def test_oval_preview_polygon_does_not_draw_through_arc_center():
-    # The bug this exists to fix: naively connecting the 3 raw clicks per
-    # end with straight lines passes directly through the arc's own center
-    # -- the true curve never does, for a non-degenerate radius.
-    preview = oval_preview_polygon(_SIX_CLICKS, arc_samples=16)
-    assert LEFT_END.center not in preview
-    assert RIGHT_END.center not in preview
 
 
 # --- build_authoring_from_marked_zones --------------------------------------
@@ -153,7 +117,7 @@ def test_oval_preview_polygon_does_not_draw_through_arc_center():
 def _small_marked_zones() -> MarkedZones:
     # A minimal, plausible 4-seat "table": seats far enough apart and small
     # enough that a 50%-toward-centroid chip_zone can never collide with a
-    # neighbor's, and the board_zone/dealer_area sit well clear of all four.
+    # neighbor's, and the board_zone sits well clear of all four.
     seats = {
         "north": _square(0, -100, half=20),
         "east": _square(100, 0, half=20),
@@ -161,20 +125,10 @@ def _small_marked_zones() -> MarkedZones:
         "west": _square(-100, 0, half=20),
     }
     board_zone = [(-10, -10), (10, -10), (10, 10), (-10, 10)]
-    inner_oval = (
-        ArcClick(start=(-40, -40), center=(-40, 0), end=(-40, 40)),
-        ArcClick(start=(40, 40), center=(40, 0), end=(40, -40)),
-    )
-    outer_oval = (
-        ArcClick(start=(-140, -140), center=(-140, 0), end=(-140, 140)),
-        ArcClick(start=(140, 140), center=(140, 0), end=(140, -140)),
-    )
     return MarkedZones(
         seat_polygons=seats,
         dealer_seat_key="north",
         board_zone_points=board_zone,
-        inner_oval=inner_oval,
-        outer_oval=outer_oval,
         image_size=(2000, 2000),
     )
 
@@ -209,13 +163,14 @@ def test_build_authoring_chip_zone_shrink_factor_is_configurable():
     assert chip_zone_area(shrunk_more, "seat_1") < chip_zone_area(default, "seat_1")
 
 
-def test_build_authoring_dealer_area_is_derived_from_inner_oval():
+def test_build_authoring_dealer_area_is_derived_from_seat_inner_corners():
     authoring = build_authoring_from_marked_zones(_small_marked_zones(), table_id="t")
-    # Roughly the inner oval's extent (radius 40 circles at x=-40/+40) --
-    # confirms dealer_area came from the inner, not outer, oval.
-    xs = [p.x for p in authoring.zones.dealer_area.points]
-    assert max(xs) < 100
-    assert min(xs) > -100
+    # infer_inner_boundary_polygon picks each seat's 2 corners closest to
+    # the table centroid (0, 0) -- for these seats (half=20, centers at
+    # +-100), that's consistently the corner pair 80 units out, never the
+    # 120-units-out outer pair.
+    for point in authoring.zones.dealer_area.points:
+        assert max(abs(point.x), abs(point.y)) == pytest.approx(80.0)
 
 
 def test_build_authoring_is_deterministic():
@@ -224,34 +179,13 @@ def test_build_authoring_is_deterministic():
     assert a.model_dump() == b.model_dump()
 
 
-# Codex review finding (P2): the outer oval's clicked radius/curvature must
-# actually influence the output -- not be collected and then discarded,
-# leaving only its 4 tangent points to matter.
-
-
-def test_build_authoring_homography_uses_full_outer_oval_curve():
-    base = _small_marked_zones()
-    wider = MarkedZones(
-        seat_polygons=base.seat_polygons,
-        dealer_seat_key=base.dealer_seat_key,
-        board_zone_points=base.board_zone_points,
-        inner_oval=base.inner_oval,
-        # Same 4 tangent points as base.outer_oval, but a much larger
-        # radius/center for each end -- if only the tangent points were
-        # used, this would be indistinguishable from `base`.
-        outer_oval=(
-            ArcClick(start=(-140, -140), center=(-500, 0), end=(-140, 140)),
-            ArcClick(start=(140, 140), center=(500, 0), end=(140, -140)),
-        ),
-        image_size=base.image_size,
-    )
-
-    authoring_base = build_authoring_from_marked_zones(base, table_id="t")
-    authoring_wider = build_authoring_from_marked_zones(wider, table_id="t")
-
-    assert authoring_base.homography.points != authoring_wider.homography.points
-    # Every correspondence is still image_point == table_point (identity).
-    for correspondence in authoring_wider.homography.points:
+def test_build_authoring_homography_is_identity_from_image_corners():
+    authoring = build_authoring_from_marked_zones(_small_marked_zones(), table_id="t")
+    width, height = 2000.0, 2000.0
+    expected = {(0.0, 0.0), (width, 0.0), (width, height), (0.0, height)}
+    actual = {(c.image_point.x, c.image_point.y) for c in authoring.homography.points}
+    assert actual == expected
+    for correspondence in authoring.homography.points:
         assert correspondence.image_point.x == correspondence.table_point.x
         assert correspondence.image_point.y == correspondence.table_point.y
 

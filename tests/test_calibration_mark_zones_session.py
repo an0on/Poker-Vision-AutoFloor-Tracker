@@ -85,7 +85,7 @@ def test_pick_dealer_at_point_inside_a_seat_selects_it():
     cy = sum(p[1] for p in first_polygon) / 4
     session.pick_dealer_at((cx, cy))
     assert session.dealer_seat_key == first_key
-    assert session.step is Step.INNER_OVAL
+    assert session.step is Step.BOARD_ZONE
 
 
 def test_pick_dealer_at_point_outside_every_seat_rejected():
@@ -101,10 +101,10 @@ def test_pick_dealer_at_wrong_step_rejected():
         session.pick_dealer_at((0, 0))
 
 
-# --- INNER_OVAL / OUTER_OVAL / BOARD_ZONE steps --------------------------------
+# --- BOARD_ZONE step ------------------------------------------------------------
 
 
-def _session_at_inner_oval() -> ClickSession:
+def _session_at_board_zone() -> ClickSession:
     session = _fresh_session_with_all_seats()
     first_key, first_polygon = next(iter(session.seats.items()))
     cx = sum(p[0] for p in first_polygon) / 4
@@ -113,65 +113,32 @@ def _session_at_inner_oval() -> ClickSession:
     return session
 
 
-def test_inner_oval_advances_after_exactly_six_points():
-    session = _session_at_inner_oval()
-    points = [(-100, -50), (-100, 0), (-100, 50), (100, 50), (100, 0), (100, -50)]
-    for point in points[:5]:
-        session.add_point(point)
-    assert session.step is Step.INNER_OVAL
-    session.add_point(points[5])
-    assert session.step is Step.OUTER_OVAL
-    assert session.inner_oval_points == points
-
-
-def test_undo_during_oval_step_removes_last_point():
-    session = _session_at_inner_oval()
-    session.add_point((-100, -50))
-    session.add_point((-100, 0))
-    session.undo()
-    assert session.inner_oval_points == [(-100, -50)]
-
-
-# Codex review finding (P2): INNER_OVAL's 6th point, OUTER_OVAL's 6th, and
-# BOARD_ZONE's 4th each auto-advance the step immediately -- a mistaken
-# final click there must still be undoable, not silently no-op against the
-# new, empty step.
-
-
-def test_undo_after_inner_oval_auto_advance_reopens_it():
-    session = _session_at_inner_oval()
-    points = [(-100, -50), (-100, 0), (-100, 50), (100, 50), (100, 0), (100, -50)]
-    for point in points:
-        session.add_point(point)
-    assert session.step is Step.OUTER_OVAL
-    assert session.outer_oval_points == []
-
-    session.undo()
-    assert session.step is Step.INNER_OVAL
-    assert session.inner_oval_points == points[:5]
-
-
-def test_undo_after_outer_oval_auto_advance_reopens_it():
-    session = _session_at_inner_oval()
-    for point in [(-100, -50), (-100, 0), (-100, 50), (100, 50), (100, 0), (100, -50)]:
-        session.add_point(point)
-    outer_points = [(-200, -100), (-200, 0), (-200, 100), (200, 100), (200, 0), (200, -100)]
-    for point in outer_points:
+def test_board_zone_advances_after_exactly_four_points():
+    session = _session_at_board_zone()
+    points = [(-10, -10), (10, -10), (10, 10), (-10, 10)]
+    for point in points[:3]:
         session.add_point(point)
     assert session.step is Step.BOARD_ZONE
-    assert session.board_zone_points == []
+    session.add_point(points[3])
+    assert session.step is Step.DONE
+    assert session.board_zone_points == points
 
+
+def test_undo_during_board_zone_step_removes_last_point():
+    session = _session_at_board_zone()
+    session.add_point((-10, -10))
+    session.add_point((10, -10))
     session.undo()
-    assert session.step is Step.OUTER_OVAL
-    assert session.outer_oval_points == outer_points[:5]
+    assert session.board_zone_points == [(-10, -10)]
+
+
+# Codex review finding (P2): BOARD_ZONE's 4th point auto-advances the step
+# to DONE immediately -- a mistaken final click there must still be
+# undoable, not silently no-op against the new, empty step.
 
 
 def test_undo_after_board_zone_auto_advance_reopens_it():
-    session = _session_at_inner_oval()
-    for point in [(-100, -50), (-100, 0), (-100, 50), (100, 50), (100, 0), (100, -50)]:
-        session.add_point(point)
-    for point in [(-200, -100), (-200, 0), (-200, 100), (200, 100), (200, 0), (200, -100)]:
-        session.add_point(point)
+    session = _session_at_board_zone()
     board_points = [(-10, -10), (10, -10), (10, 10), (-10, 10)]
     for point in board_points:
         session.add_point(point)
@@ -182,40 +149,8 @@ def test_undo_after_board_zone_auto_advance_reopens_it():
     assert session.board_zone_points == board_points[:3]
 
 
-def test_undo_chains_back_across_multiple_boundaries():
-    # Immediately after finishing BOARD_ZONE (step DONE), repeated undo calls
-    # should walk all the way back through OUTER_OVAL and into INNER_OVAL,
-    # not just the one adjacent boundary.
-    session = _session_at_inner_oval()
-    inner_points = [(-100, -50), (-100, 0), (-100, 50), (100, 50), (100, 0), (100, -50)]
-    outer_points = [(-200, -100), (-200, 0), (-200, 100), (200, 100), (200, 0), (200, -100)]
-    board_points = [(-10, -10), (10, -10), (10, 10), (-10, 10)]
-    for point in inner_points + outer_points + board_points:
-        session.add_point(point)
-    assert session.step is Step.DONE
-
-    # Each undo call consumes exactly one point, board or outer, following
-    # the boundary-crossing chain -- draining both collections takes exactly
-    # len(board_points) + len(outer_points) calls, landing on OUTER_OVAL
-    # with an empty buffer (one more call would cross into INNER_OVAL).
-    for _ in range(len(board_points) + len(outer_points)):
-        session.undo()
-    assert session.step is Step.OUTER_OVAL
-    assert session.outer_oval_points == []
-    session.undo()  # crosses one more boundary, back into INNER_OVAL
-    assert session.step is Step.INNER_OVAL
-    assert session.inner_oval_points == inner_points[:5]
-
-
 def test_full_session_reaches_done_and_builds():
-    session = _session_at_inner_oval()
-    inner = [(-100, -50), (-100, 0), (-100, 50), (100, 50), (100, 0), (100, -50)]
-    outer = [(-200, -100), (-200, 0), (-200, 100), (200, 100), (200, 0), (200, -100)]
-    for point in inner:
-        session.add_point(point)
-    assert session.step is Step.OUTER_OVAL
-    for point in outer:
-        session.add_point(point)
+    session = _session_at_board_zone()
     assert session.step is Step.BOARD_ZONE
     for point in [(-10, -10), (10, -10), (10, 10), (-10, 10)]:
         session.add_point(point)

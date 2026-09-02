@@ -17,8 +17,16 @@ coordinate system via feature-matching homography composition, not by
 re-measuring anything either.
 
 Because table coordinates equal photo pixel coordinates here, the
-authoring's `homography` is an identity mapping -- see
-`_identity_homography_from_outer_oval`.
+authoring's `homography` is an identity mapping, solved from the photo's
+own 4 corners -- see `_identity_homography_from_image_corners`. `dealer_area`
+(REQ-7's "Action Area", the inner-oval region) is likewise not clicked
+separately: `infer_inner_boundary_polygon` derives it from the seat
+polygons the operator already clicked, since two manual arc-center clicks
+per oval (originally REQ-10a's design) turned out to be a fragile way to
+mark a precise curve by hand in practice -- a wrongly-placed center click
+produces a wildly wrong radius with no way to visually sanity-check it
+before the fact, whereas both derivations here only ever use points
+already validated as real seat corners.
 """
 
 from __future__ import annotations
@@ -42,29 +50,11 @@ from poker_vision.config import Resolution
 Point = tuple[float, float]
 
 DEFAULT_CHIP_ZONE_SHRINK_FACTOR = 0.5
-DEFAULT_ARC_SAMPLE_COUNT = 16
 _MIN_SEATS = 3
 # Numerically arbitrary (undistortion is an exact identity when distortion
 # is all-zero, see `undistort.py`) -- kept only for a plausible-looking
 # authoring file; real intrinsics were never measured for this rig.
 _PLACEHOLDER_FOCAL_LENGTH = 1400.0
-
-
-@dataclass(frozen=True, slots=True)
-class ArcClick:
-    """One end-cap of an oval: tangent point, arc center, tangent point.
-
-    `start`/`end` are the two points where the oval's curve meets the
-    straight run on either long side (what the operator clicks first and
-    last for this end); `center` is the circle's center. The arc between
-    `start` and `end` is taken the long way around -- away from the other
-    end's center -- since that's the physical curve, not the short way
-    that would cut through the table's interior.
-    """
-
-    start: Point
-    center: Point
-    end: Point
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,14 +65,15 @@ class MarkedZones:
     session (e.g. click order) -- deliberately *not* assumed to already be
     in clockwise physical order; `number_seats_clockwise` derives that
     itself from each polygon's centroid, so a scrambled click order can't
-    silently mis-number seats.
+    silently mis-number seats. There is no separate inner/outer-oval click
+    data: `build_authoring_from_marked_zones` derives both `dealer_area`
+    and the homography from `seat_polygons`/`image_size` alone (see this
+    module's docstring for why).
     """
 
     seat_polygons: dict[str, list[Point]]
     dealer_seat_key: str
     board_zone_points: list[Point]
-    inner_oval: tuple[ArcClick, ArcClick]
-    outer_oval: tuple[ArcClick, ArcClick]
     image_size: tuple[int, int]
 
 
@@ -105,80 +96,38 @@ def _shrink_toward_centroid(points: list[Point], factor: float) -> list[Point]:
     return [(cx + factor * (x - cx), cy + factor * (y - cy)) for x, y in points]
 
 
-def _arc_polyline(arc: ArcClick, away_from: Point, n: int) -> list[Point]:
-    """Sample `n + 1` points along `arc`'s curve from `start` to `end`, the
-    long way around (whichever of the two possible directions ends up
-    farther, at its midpoint, from `away_from` -- the other end's center).
+def infer_inner_boundary_polygon(seat_polygons: dict[str, list[Point]]) -> list[Point]:
+    """Derive `dealer_area` (REQ-7's "Action Area") from the already-clicked
+    seat wedges, instead of a separate manual oval-click step.
+
+    For each seat, its two corners closest to the table's overall centroid
+    are the ones facing the board -- an adjacent seat's own closest pair
+    meets that same boundary, since neighbouring wedges share it. Collecting
+    every seat's closest pair and sorting all of them by angle around the
+    table centroid (the same technique `number_seats_clockwise` uses to
+    order seats) produces a simple, star-shaped polygon hugging the true
+    inner boundary -- correct for any seat point count (>= 3, REQ-10a's
+    per-seat minimum) or click winding, and immune to the "manually click a
+    circle's center" failure mode that motivated dropping the oval-click
+    steps in the first place (a slightly mis-clicked corner only nudges the
+    boundary a little; a mis-clicked arc-center could blow the whole curve
+    up to any radius).
     """
-    cx, cy = arc.center
-    radius = (_dist(arc.center, arc.start) + _dist(arc.center, arc.end)) / 2.0
-    if radius <= 1e-9:
-        raise ValueError("degenerate arc: center coincides with its start/end point")
-    angle_start = math.atan2(arc.start[1] - cy, arc.start[0] - cx)
-    angle_end = math.atan2(arc.end[1] - cy, arc.end[0] - cx)
+    centroids = [_polygon_centroid(points) for points in seat_polygons.values()]
+    table_centroid = (
+        sum(c[0] for c in centroids) / len(centroids),
+        sum(c[1] for c in centroids) / len(centroids),
+    )
 
-    def sample(going_positive: bool) -> list[Point]:
-        diff = (angle_end - angle_start) % (2 * math.pi)
-        if not going_positive:
-            diff -= 2 * math.pi
-        return [
-            (
-                cx + radius * math.cos(angle_start + diff * i / n),
-                cy + radius * math.sin(angle_start + diff * i / n),
-            )
-            for i in range(n + 1)
-        ]
+    inner_points: list[Point] = []
+    for points in seat_polygons.values():
+        closest_two = sorted(points, key=lambda p: _dist(p, table_centroid))[:2]
+        inner_points.extend(closest_two)
 
-    candidate_a = sample(True)
-    candidate_b = sample(False)
-    mid_a = candidate_a[len(candidate_a) // 2]
-    mid_b = candidate_b[len(candidate_b) // 2]
-    return candidate_a if _dist(mid_a, away_from) >= _dist(mid_b, away_from) else candidate_b
+    def angle(point: Point) -> float:
+        return math.atan2(point[1] - table_centroid[1], point[0] - table_centroid[0])
 
-
-def build_oval_polygon(
-    end_a: ArcClick, end_b: ArcClick, arc_samples: int = DEFAULT_ARC_SAMPLE_COUNT
-) -> list[Point]:
-    """The full stadium/capsule polygon from two 3-point end-cap arcs (see
-    the click scheme described in PRD.md's REQ-10a): each end's own curve,
-    sampled the long way around, joined by straight runs to the nearer
-    tangent point of the other end -- not assumed to be axis-aligned, so a
-    slightly non-rectangular (perspective-skewed) click session still
-    closes into a simple polygon.
-    """
-    arc_a = _arc_polyline(end_a, away_from=end_b.center, n=arc_samples)
-    arc_b = _arc_polyline(end_b, away_from=end_a.center, n=arc_samples)
-    if _dist(arc_a[-1], end_b.start) > _dist(arc_a[-1], end_b.end):
-        arc_b = list(reversed(arc_b))
-    return arc_a + arc_b
-
-
-_OVAL_CLICKS_PER_END = 3
-_OVAL_CLICKS_TOTAL = _OVAL_CLICKS_PER_END * 2
-
-
-def oval_preview_polygon(
-    points: list[Point], arc_samples: int = DEFAULT_ARC_SAMPLE_COUNT
-) -> list[Point]:
-    """Best available preview for an in-progress or completed oval click sequence.
-
-    Returns `points` unchanged until both end-caps are fully clicked (6
-    points): `_arc_polyline` needs the *other* end's center to know which
-    of the two possible arc directions is "away" (the real curve, not the
-    short way cutting through the table's interior), so a lone end's 3
-    points can't be resolved into a curve yet. Once complete, returns the
-    true sampled stadium polygon (`build_oval_polygon`) -- the same points
-    that end up in the saved calibration -- instead of straight lines
-    connecting the 3 raw clicks (which visibly cut through the arc's own
-    center, nothing like the actual curve). Used by the interactive tool's
-    live preview so what the operator sees matches what gets saved.
-    """
-    if len(points) != _OVAL_CLICKS_TOTAL:
-        return points
-    a_start, a_center, a_end, b_start, b_center, b_end = points
-    end_a = ArcClick(start=a_start, center=a_center, end=a_end)
-    end_b = ArcClick(start=b_start, center=b_center, end=b_end)
-    return build_oval_polygon(end_a, end_b, arc_samples=arc_samples)
+    return sorted(inner_points, key=angle)
 
 
 def number_seats_clockwise(
@@ -235,31 +184,28 @@ def _to_table_polygon(points: list[Point]) -> TablePolygon:
     return TablePolygon(points=[TablePoint(x=x, y=y) for x, y in points])
 
 
-def _identity_homography_from_outer_oval(
-    outer_oval: tuple[ArcClick, ArcClick], arc_samples: int
+def _identity_homography_from_image_corners(
+    width: float, height: float
 ) -> HomographyCorrespondences:
     """Correspondence points for `calib compile` to solve (REQ-9).
 
     Table coordinates equal photo pixel coordinates here (see module
-    docstring), so `image_point == table_point` for every correspondence.
-    Uses every point of the outer oval's own sampled polygon (its 2
-    tangent points *and* the arc points in between, i.e. the same points
-    `build_oval_polygon` would use for the shape itself) rather than just
-    the 4 tangent points: the operator's arc-center/radius clicks would
-    otherwise be collected and then silently thrown away, changing
-    nothing about the output. Numerically this is still an exact identity
-    (every correspondence has image_point == table_point, so the least-
-    squares DLT solve has zero residual regardless of point count) --
-    the difference is that the marked curvature now actually feeds the
-    computed homography instead of being discarded.
+    docstring), so `image_point == table_point` for every correspondence --
+    the photo's own 4 corners already satisfy `cv2.findHomography`'s
+    minimum-4-points/non-degenerate requirement and solve to the exact
+    identity matrix (zero residual, since every correspondence already
+    satisfies image_point == table_point) regardless of which 4 points are
+    used. There is nothing an operator could usefully click here; a
+    previous design solved this from an operator-clicked outer oval
+    instead, which existed for this purpose alone.
     """
-    points = build_oval_polygon(*outer_oval, arc_samples=arc_samples)
+    corners = [(0.0, 0.0), (width, 0.0), (width, height), (0.0, height)]
     return HomographyCorrespondences(
         points=[
             HomographyPointCorrespondence(
                 image_point={"x": x, "y": y}, table_point={"x": x, "y": y}
             )
-            for x, y in points
+            for x, y in corners
         ]
     )
 
@@ -269,7 +215,6 @@ def build_authoring_from_marked_zones(
     table_id: str,
     *,
     chip_zone_shrink_factor: float = DEFAULT_CHIP_ZONE_SHRINK_FACTOR,
-    arc_samples: int = DEFAULT_ARC_SAMPLE_COUNT,
 ) -> CalibrationAuthoring:
     """Assemble a full `CalibrationAuthoring` from one marking session.
 
@@ -307,7 +252,7 @@ def build_authoring_from_marked_zones(
         for key, points in marked.seat_polygons.items()
     ]
 
-    dealer_area_points = build_oval_polygon(*marked.inner_oval, arc_samples=arc_samples)
+    dealer_area_points = infer_inner_boundary_polygon(marked.seat_polygons)
     board_zone = _to_table_polygon(marked.board_zone_points)
     dealer_area = _to_table_polygon(dealer_area_points)
 
@@ -325,7 +270,7 @@ def build_authoring_from_marked_zones(
             cy=height / 2.0,
         ),
         distortion=DistortionCoefficients(),
-        homography=_identity_homography_from_outer_oval(marked.outer_oval, arc_samples),
+        homography=_identity_homography_from_image_corners(float(width), float(height)),
         table={"width": float(width), "height": float(height), "unit": TableUnit.MM},
         seats=seats,
         zones=GlobalZones(board_zone=board_zone, dealer_area=dealer_area),
