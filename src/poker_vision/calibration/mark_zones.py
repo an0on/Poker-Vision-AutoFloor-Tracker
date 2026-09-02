@@ -150,28 +150,41 @@ def _clip_polygon_to_halfplane(
 
 
 def _clip_away_from_point(
-    polygon: list[Point], from_point: Point, inset_pixels: float
+    polygon: list[Point],
+    from_point: Point,
+    inset_pixels: float,
+    anchor_points: list[Point] | None = None,
 ) -> list[Point]:
     """Clip `polygon` to remove the sliver within `inset_pixels` of `from_point`.
 
     The cut line is perpendicular to the direction from `from_point` to
     `polygon`'s own centroid, positioned `inset_pixels` further from
-    `from_point` than `polygon`'s own closest point *projected onto that
-    direction* (not that point's raw distance to `from_point` -- an
-    off-axis corner's raw distance overstates how far along this
-    particular line it sits, which would clip away that very point even
-    at `inset_pixels=0` instead of the cut landing exactly on it).
+    `from_point` than the closest of `anchor_points` (default: every point
+    of `polygon` itself) *projected onto that direction* (not that point's
+    raw distance to `from_point` -- an off-axis corner's raw distance
+    overstates how far along this particular line it sits, which would
+    clip away that very point even at `inset_pixels=0` instead of the cut
+    landing exactly on it).
+
+    `anchor_points` lets a caller restrict which of `polygon`'s points are
+    eligible to *position* the cut line without restricting what actually
+    gets clipped (still every point of `polygon`) -- see
+    `_derive_chip_zone`'s neighbour clips, which anchor only on this
+    seat's inner-side points so a side cut can never be anchored on an
+    outer, rail-facing corner and eat into the rail edge it must leave
+    untouched.
 
     Shared by `_derive_chip_zone`'s two uses: clipping a seat's
     `player_area` away from the table centroid (the inner, `dealer_area`-
     facing edge) and away from each neighbouring seat's centroid (the two
     side edges) -- same operation, only which point it clips away from
-    differs. A one-line clip can only ever remove area from `polygon`,
-    never move a point outside it, unlike moving individual vertices by a
-    fixed offset (tried first; real click sessions produce irregular
-    polygons where no single "inward" direction is every vertex's own true
-    local inward normal, and a vertex can end up pushed clean through a
-    nearby edge of its own polygon).
+    (and which points may anchor the cut) differs. A one-line clip can
+    only ever remove area from `polygon`, never move a point outside it,
+    unlike moving individual vertices by a fixed offset (tried first; real
+    click sessions produce irregular polygons where no single "inward"
+    direction is every vertex's own true local inward normal, and a
+    vertex can end up pushed clean through a nearby edge of its own
+    polygon).
     """
     polygon_centroid = _polygon_centroid(polygon)
     dx = polygon_centroid[0] - from_point[0]
@@ -181,8 +194,10 @@ def _clip_away_from_point(
         return list(polygon)
     normal = (dx / length, dy / length)
 
+    candidates = polygon if anchor_points is None else anchor_points
     closest_projection = min(
-        (p[0] - from_point[0]) * normal[0] + (p[1] - from_point[1]) * normal[1] for p in polygon
+        (p[0] - from_point[0]) * normal[0] + (p[1] - from_point[1]) * normal[1]
+        for p in candidates
     )
     cut_distance = closest_projection + inset_pixels
     line_point = (
@@ -219,6 +234,20 @@ def _derive_chip_zone(
     side clips are what actually make that guarantee hold on real data,
     not just tidiness.
     """
+    # Only this seat's inner-side points (nearer half of player_area's own
+    # [closest, farthest] range from the table centroid) may anchor a
+    # neighbour clip's cut line -- anchoring on an outer, rail-facing
+    # corner instead (a real risk: the closest point *towards a given
+    # neighbour* is not necessarily an inner one) would eat into the rail
+    # edge the neighbour clips must leave untouched. Computed once from
+    # the original, unclipped points; still valid as an anchor for every
+    # neighbour clip below even once `zone` itself has moved on.
+    distances = [_dist(p, table_centroid) for p in player_area_points]
+    inner_threshold = (min(distances) + max(distances)) / 2.0
+    inner_points = [
+        p for p, d in zip(player_area_points, distances, strict=True) if d <= inner_threshold
+    ]
+
     zone = _clip_away_from_point(player_area_points, table_centroid, inset_pixels)
     for neighbor_centroid, neighbor_inset in neighbor_clips:
         # Not guarded against too few resulting points: an inset too large
@@ -243,7 +272,10 @@ def _derive_chip_zone(
         # MARGIN` is far larger than that noise and still visually
         # meaningless against reference-photo pixel coordinates.
         zone = _clip_away_from_point(
-            zone, neighbor_centroid, neighbor_inset + _CHAINED_CLIP_SAFETY_MARGIN
+            zone,
+            neighbor_centroid,
+            neighbor_inset + _CHAINED_CLIP_SAFETY_MARGIN,
+            anchor_points=inner_points,
         )
     return zone
 
@@ -258,32 +290,37 @@ def _safe_chip_zone(
     neighbor_clips: list[tuple[Point, float]],
     inset_pixels: float,
 ) -> list[Point]:
-    """`_derive_chip_zone`, backing off to a smaller *inner-edge* inset if
-    the requested one doesn't actually fit this specific wedge (REQ-11).
+    """`_derive_chip_zone`, backing off to smaller insets if the requested
+    ones don't actually fit this specific wedge (REQ-11).
 
     A single straight cut line is exact for a convex wedge, but real click
     sessions occasionally produce a seat polygon that's slightly concave or
     has a near-self-touching vertex (an operator's dense curve-tracing
     meeting the next straight run at a shallow angle) -- for those, a large
-    `inset_pixels` can legitimately clip past a local pinch in the shape
-    and end up outside `player_area`, even though the exact same operation
-    is fine for every other, better-behaved seat at the table. Halving
-    `inset_pixels` up to `_MAX_CHIP_ZONE_INSET_RETRIES` times and re-
-    validating with the same `polygon_contains` check REQ-11 itself uses
-    finds a safe inset for that one seat automatically, rather than either
-    failing the whole session over one awkward wedge or silently writing an
-    invalid `chip_zone` that would fail REQ-11 anyway.
-
-    `neighbor_clips` is passed straight through, unmodified, on every
-    attempt: cross-seat overlap (the failure mode neighbour clips guard
-    against) is resolved separately, per pair, by
-    `_resolve_chip_zone_overlaps` -- only this seat's own containment
-    against its own `player_area` is retried here.
+    inset can legitimately clip past a local pinch in the shape and end up
+    outside `player_area` (or clip the wedge away to nothing), even though
+    the exact same operation is fine for every other, better-behaved seat
+    at the table. Scaling every inset here -- the inner-edge one and every
+    entry of `neighbor_clips`, together, by the same factor -- down by half
+    up to `_MAX_CHIP_ZONE_INSET_RETRIES` times, re-validating with the same
+    `polygon_contains` check REQ-11 itself uses, finds a safe combination
+    for that one seat automatically, rather than either failing the whole
+    session over one awkward wedge or silently writing an invalid
+    `chip_zone` that would fail REQ-11 anyway. Scaling every clip together
+    (not just the inner one) matters once `neighbor_clips`' insets can be
+    escalated well past `inset_pixels` by `_compute_all_chip_zones`'s own
+    overlap resolution -- a seat can turn out too small for *that*
+    combination even when the plain, unescalated inset would have been
+    fine, and only shrinking the inner clip wouldn't reach the actual
+    cause.
     """
-    candidate_inset = inset_pixels
+    scale = 1.0
     for _ in range(_MAX_CHIP_ZONE_INSET_RETRIES):
         zone_points = _derive_chip_zone(
-            player_area_points, table_centroid, neighbor_clips, candidate_inset
+            player_area_points,
+            table_centroid,
+            [(centroid, inset * scale) for centroid, inset in neighbor_clips],
+            inset_pixels * scale,
         )
         try:
             player_area = TablePolygon(
@@ -291,13 +328,13 @@ def _safe_chip_zone(
             )
             zone = TablePolygon(points=[TablePoint(x=x, y=y) for x, y in zone_points])
         except ValidationError:
-            candidate_inset /= 2.0
+            scale /= 2.0
             continue
         if polygon_contains(player_area, zone):
             return zone_points
-        candidate_inset /= 2.0
+        scale /= 2.0
     # Every retry failed (pathological wedge shape): return the original,
-    # unclipped `inset_pixels` result and let REQ-11's own validation in
+    # unscaled result and let REQ-11's own validation in
     # `build_authoring_from_marked_zones` reject it with its usual clear
     # error, rather than silently falling back to something unrequested.
     return _derive_chip_zone(player_area_points, table_centroid, neighbor_clips, inset_pixels)
@@ -543,8 +580,21 @@ def build_authoring_from_marked_zones(
     n = len(keys_by_seat_number)
 
     def neighbor_keys_for(key: str) -> list[str]:
+        # An explicitly ordered [prev, next] pair, not `list({prev, next})`:
+        # Python's set iteration order for strings depends on hash
+        # randomization (PYTHONHASHSEED), which differs per process --
+        # since the neighbour clips chain (each one clips the *previous*
+        # clip's already-clipped result, see `_derive_chip_zone`), a
+        # different clip order can produce different floating-point
+        # intersection points from the exact same input, breaking AC-6's
+        # byte-identical-output guarantee across runs. `prev_key ==
+        # next_key` only when there are too few seats to have two distinct
+        # neighbours (not a real table, but keeps the same single-entry
+        # result the old set-based version gave for that case).
         i = key_index[key]
-        return list({keys_by_seat_number[(i - 1) % n], keys_by_seat_number[(i + 1) % n]})
+        prev_key = keys_by_seat_number[(i - 1) % n]
+        next_key = keys_by_seat_number[(i + 1) % n]
+        return [prev_key] if prev_key == next_key else [prev_key, next_key]
 
     neighbor_keys = {key: neighbor_keys_for(key) for key in marked.seat_polygons}
     chip_zones = _compute_all_chip_zones(
