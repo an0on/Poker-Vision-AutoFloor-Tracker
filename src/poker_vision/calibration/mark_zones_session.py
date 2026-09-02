@@ -14,11 +14,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum, auto
 
-from poker_vision.calibration.mark_zones import ArcClick, MarkedZones, Point
+from poker_vision.calibration.mark_zones import MarkedZones, Point
 
 _SEAT_COUNT = 10
-_OVAL_CLICKS_PER_END = 3
-_OVAL_CLICKS_TOTAL = _OVAL_CLICKS_PER_END * 2
 _BOARD_ZONE_CLICKS = 4
 _MIN_POLYGON_POINTS = 3
 
@@ -26,8 +24,6 @@ _MIN_POLYGON_POINTS = 3
 class Step(StrEnum):
     SEATS = auto()
     PICK_DEALER = auto()
-    INNER_OVAL = auto()
-    OUTER_OVAL = auto()
     BOARD_ZONE = auto()
     DONE = auto()
 
@@ -71,8 +67,6 @@ class ClickSession:
     seats: dict[str, list[Point]] = field(default_factory=dict)
     dealer_seat_key: str | None = None
     board_zone_points: list[Point] = field(default_factory=list)
-    inner_oval_points: list[Point] = field(default_factory=list)
-    outer_oval_points: list[Point] = field(default_factory=list)
     _current_polygon: list[Point] = field(default_factory=list)
     _next_seat_number: int = 1
 
@@ -85,12 +79,6 @@ class ClickSession:
         """Add one clicked point to whatever the current step is collecting."""
         if self.step is Step.SEATS:
             self._current_polygon.append(point)
-        elif self.step is Step.INNER_OVAL:
-            self.inner_oval_points.append(point)
-            self._advance_oval_if_complete(Step.INNER_OVAL, Step.OUTER_OVAL)
-        elif self.step is Step.OUTER_OVAL:
-            self.outer_oval_points.append(point)
-            self._advance_oval_if_complete(Step.OUTER_OVAL, Step.BOARD_ZONE)
         elif self.step is Step.BOARD_ZONE:
             self.board_zone_points.append(point)
             if len(self.board_zone_points) == _BOARD_ZONE_CLICKS:
@@ -98,44 +86,27 @@ class ClickSession:
         else:
             raise ValueError(f"add_point is not valid in step {self.step}")
 
-    def _advance_oval_if_complete(self, current: Step, next_step: Step) -> None:
-        points = self.inner_oval_points if current is Step.INNER_OVAL else self.outer_oval_points
-        if len(points) == _OVAL_CLICKS_TOTAL:
-            self.step = next_step
-
     def undo(self) -> None:
         """Remove the most recently added point, anywhere it landed.
 
-        INNER_OVAL's 6th point, OUTER_OVAL's 6th, and BOARD_ZONE's 4th each
-        auto-advance the step the instant they're added (`add_point`), so a
-        mistaken final click there leaves the *new* step's own buffer empty
-        -- undo has to walk back across that boundary and pop the point
-        that actually caused the transition, not silently no-op. Repeated
-        calls chain naturally back through INNER_OVAL -> OUTER_OVAL ->
-        BOARD_ZONE -> DONE this way.
+        BOARD_ZONE's 4th point auto-advances the step to DONE the instant
+        it's added (`add_point`), so a mistaken final click there leaves
+        DONE's own state with nothing to pop -- undo has to walk back
+        across that boundary and pop the point that actually caused the
+        transition, not silently no-op.
 
         Does *not* reopen an already-committed seat (SEATS -> PICK_DEALER,
-        `finish_polygon`): unlike the above, that transition is always an
-        explicit, deliberate action (Enter/Space), never a last-click
-        surprise, so there is no accidental point to undo back to -- the
-        operator had every chance to fix the polygon before confirming it.
+        `finish_polygon`) or the dealer pick itself (PICK_DEALER ->
+        BOARD_ZONE, `pick_dealer_at`): unlike BOARD_ZONE's last click,
+        both of those transitions are always an explicit, deliberate
+        action, never a last-click surprise, so there is no accidental
+        point to undo back to -- the operator had every chance to fix
+        their choice before confirming it.
         """
         if self.step is Step.SEATS and self._current_polygon:
             self._current_polygon.pop()
-        elif self.step is Step.INNER_OVAL and self.inner_oval_points:
-            self.inner_oval_points.pop()
-        elif self.step is Step.OUTER_OVAL:
-            if self.outer_oval_points:
-                self.outer_oval_points.pop()
-            elif self.inner_oval_points:
-                self.step = Step.INNER_OVAL
-                self.inner_oval_points.pop()
-        elif self.step is Step.BOARD_ZONE:
-            if self.board_zone_points:
-                self.board_zone_points.pop()
-            elif self.outer_oval_points:
-                self.step = Step.OUTER_OVAL
-                self.outer_oval_points.pop()
+        elif self.step is Step.BOARD_ZONE and self.board_zone_points:
+            self.board_zone_points.pop()
         elif self.step is Step.DONE and self.board_zone_points:
             self.step = Step.BOARD_ZONE
             self.board_zone_points.pop()
@@ -166,16 +137,9 @@ class ClickSession:
         for key, polygon in self.seats.items():
             if _point_in_polygon(point, polygon):
                 self.dealer_seat_key = key
-                self.step = Step.INNER_OVAL
+                self.step = Step.BOARD_ZONE
                 return
         raise ValueError(f"{point} is not inside any marked seat")
-
-    def _oval_arc_clicks(self, points: list[Point]) -> tuple[ArcClick, ArcClick]:
-        (a_start, a_center, a_end, b_start, b_center, b_end) = points
-        return (
-            ArcClick(start=a_start, center=a_center, end=a_end),
-            ArcClick(start=b_start, center=b_center, end=b_end),
-        )
 
     def build(self) -> MarkedZones:
         """Assemble the completed session into a `MarkedZones` (REQ-10a).
@@ -189,7 +153,5 @@ class ClickSession:
             seat_polygons=dict(self.seats),
             dealer_seat_key=self.dealer_seat_key,
             board_zone_points=list(self.board_zone_points),
-            inner_oval=self._oval_arc_clicks(self.inner_oval_points),
-            outer_oval=self._oval_arc_clicks(self.outer_oval_points),
             image_size=self.image_size,
         )

@@ -29,7 +29,6 @@ from poker_vision.calibration.mark_zones import (
     DEFAULT_CHIP_ZONE_SHRINK_FACTOR,
     Point,
     build_authoring_from_marked_zones,
-    oval_preview_polygon,
 )
 from poker_vision.calibration.mark_zones_session import ClickSession, Step
 from poker_vision.debug.overlay import draw_zones
@@ -39,8 +38,6 @@ _WINDOW_NAME = "calib mark-zones"
 _COLOR_SEAT_DONE = (200, 120, 0)
 _COLOR_SEAT_CURRENT = (0, 255, 255)
 _COLOR_DEALER = (0, 0, 255)
-_COLOR_OVAL_DONE = (120, 120, 0)
-_COLOR_OVAL_CURRENT = (0, 200, 200)
 _COLOR_BOARD = (255, 0, 255)
 _COLOR_TEXT = (255, 255, 255)
 
@@ -63,8 +60,6 @@ _MAX_DISPLAY_DIMENSION = 1400
 _STEP_INSTRUCTIONS: dict[Step, str] = {
     Step.SEATS: "Click a seat's player_area corners, Enter/Space to finish it (need 10 seats)",
     Step.PICK_DEALER: "Click inside the seat that is the fixed card-dealer (Kartengeber) position",
-    Step.INNER_OVAL: "Click inner oval: end A start/center/end, end B start/center/end (6 pts)",
-    Step.OUTER_OVAL: "Click outer oval: end A start/center/end, end B start/center/end (6 pts)",
     Step.BOARD_ZONE: "Click board_zone's 4 corners",
     Step.DONE: "Done -- 's' to save, Esc to discard",
 }
@@ -101,27 +96,6 @@ def _render_content(base_image: np.ndarray, session: ClickSession) -> np.ndarray
         _draw_polyline(image, points, color, closed=True)
     if session.step is Step.SEATS:
         _draw_polyline(image, session.current_polygon, _COLOR_SEAT_CURRENT, closed=False)
-
-    # `oval_preview_polygon` returns its input unchanged below 6 points (see
-    # its own docstring: an arc's direction can't be resolved from one end
-    # alone), so the CURRENT branches below are always still-open raw click
-    # points -- `add_point` advances `session.step` away from a CURRENT
-    # oval step in the same call that lands its 6th point, so by the time
-    # this renders, a still-CURRENT oval step never actually has all 6.
-    step_order = list(Step)
-    current_index = step_order.index(session.step)
-    if session.step is Step.INNER_OVAL:
-        preview = oval_preview_polygon(session.inner_oval_points)
-        _draw_polyline(image, preview, _COLOR_OVAL_CURRENT, closed=False)
-    elif current_index > step_order.index(Step.INNER_OVAL):
-        preview = oval_preview_polygon(session.inner_oval_points)
-        _draw_polyline(image, preview, _COLOR_OVAL_DONE, closed=True)
-    if session.step is Step.OUTER_OVAL:
-        preview = oval_preview_polygon(session.outer_oval_points)
-        _draw_polyline(image, preview, _COLOR_OVAL_CURRENT, closed=False)
-    elif current_index > step_order.index(Step.OUTER_OVAL):
-        preview = oval_preview_polygon(session.outer_oval_points)
-        _draw_polyline(image, preview, _COLOR_OVAL_DONE, closed=True)
 
     if session.step is Step.BOARD_ZONE:
         _draw_polyline(image, session.board_zone_points, _COLOR_BOARD, closed=False)
