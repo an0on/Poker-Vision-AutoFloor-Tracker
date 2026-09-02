@@ -11,6 +11,7 @@ from poker_vision.calibration.mark_zones import (
     build_authoring_from_marked_zones,
     build_oval_polygon,
     number_seats_clockwise,
+    oval_preview_polygon,
 )
 
 # --- number_seats_clockwise --------------------------------------------------
@@ -111,6 +112,39 @@ def test_build_oval_polygon_degenerate_center_on_point_raises():
     bad = ArcClick(start=(0, 0), center=(0, 0), end=(0, 0))
     with pytest.raises(ValueError, match="degenerate"):
         build_oval_polygon(bad, RIGHT_END)
+
+
+# --- oval_preview_polygon -----------------------------------------------------
+
+# Flattened click order for LEFT_END/RIGHT_END: start, center, end, start, center, end.
+_SIX_CLICKS = [
+    LEFT_END.start, LEFT_END.center, LEFT_END.end,
+    RIGHT_END.start, RIGHT_END.center, RIGHT_END.end,
+]
+
+
+@pytest.mark.parametrize("count", [0, 1, 3, 5])
+def test_oval_preview_polygon_returns_raw_points_below_six(count):
+    # Below 6 points, an arc's direction can't be resolved from one end
+    # alone (needs the other end's center) -- must return the clicks as-is,
+    # not silently drop/alter them.
+    points = _SIX_CLICKS[:count]
+    assert oval_preview_polygon(points) == points
+
+
+def test_oval_preview_polygon_at_six_points_matches_build_oval_polygon():
+    assert oval_preview_polygon(_SIX_CLICKS, arc_samples=16) == build_oval_polygon(
+        LEFT_END, RIGHT_END, arc_samples=16
+    )
+
+
+def test_oval_preview_polygon_does_not_draw_through_arc_center():
+    # The bug this exists to fix: naively connecting the 3 raw clicks per
+    # end with straight lines passes directly through the arc's own center
+    # -- the true curve never does, for a non-degenerate radius.
+    preview = oval_preview_polygon(_SIX_CLICKS, arc_samples=16)
+    assert LEFT_END.center not in preview
+    assert RIGHT_END.center not in preview
 
 
 # --- build_authoring_from_marked_zones --------------------------------------
