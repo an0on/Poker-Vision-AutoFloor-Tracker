@@ -232,18 +232,24 @@ def _show_and_save_result_preview(
 ) -> None:
     """Render every final zone onto the original photo and show + save it.
 
-    Best-effort: `out_path` already holds the real calibration by the time
-    this runs (see caller), so a failure here (e.g. an unexpected geometry
-    edge case in `compile_calibration`) is reported but must not make the
-    already-successful `mark-zones` run look like it failed.
+    Best-effort, start to finish: `out_path` already holds the real
+    calibration by the time this runs (see caller), so nothing in here --
+    compiling, drawing, encoding the PNG, or the GUI display -- may be
+    allowed to turn an already-successful `mark-zones` run into a crash.
+    Every failure is reported and swallowed instead.
     """
     try:
-        runtime = compile_calibration(authoring, based_on=str(out_path))
-        preview = image.copy()
-        draw_zones(preview, runtime)
-    except (ValueError, cv2.error) as exc:
-        print(f"mark-zones: could not render result preview: {exc}", file=sys.stderr)
-        return
+        _render_and_display_result_preview(image, authoring, out_path)
+    except (ValueError, OSError, cv2.error) as exc:
+        print(f"mark-zones: could not show/save result preview: {exc}", file=sys.stderr)
+
+
+def _render_and_display_result_preview(
+    image: np.ndarray, authoring: CalibrationAuthoring, out_path: Path
+) -> None:
+    runtime = compile_calibration(authoring, based_on=str(out_path))
+    preview = image.copy()
+    draw_zones(preview, runtime)
 
     preview_path = out_path.with_name(f"{out_path.stem}_preview.png")
     if cv2.imwrite(str(preview_path), preview):
