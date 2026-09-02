@@ -246,8 +246,12 @@ def _show_and_save_result_preview(
         return
 
     preview_path = out_path.with_name(f"{out_path.stem}_preview.png")
-    cv2.imwrite(str(preview_path), preview)
-    print(f"mark-zones: wrote result preview '{preview_path}'")
+    if cv2.imwrite(str(preview_path), preview):
+        print(f"mark-zones: wrote result preview '{preview_path}'")
+    else:
+        # cv2.imwrite fails by returning False, not raising (e.g. disk full,
+        # unwritable path) -- report it rather than silently claiming success.
+        print(f"mark-zones: could not write result preview '{preview_path}'", file=sys.stderr)
 
     display_scale = min(1.0, _MAX_DISPLAY_DIMENSION / max(preview.shape[1], preview.shape[0]))
     display = preview
