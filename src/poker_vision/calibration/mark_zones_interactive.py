@@ -126,13 +126,11 @@ def _compose_display_frame(
     second error bar) above the (already display-sized) `content` frame --
     separate strips, not drawn over the content and scaled together with
     it, so nothing photographed near the top edge is ever hidden (see
-    `_render_content`'s docstring). `content`'s own pixel (0, 0) always
-    lands at `_INSTRUCTION_BAR_HEIGHT`, never lower: the error bar (when
-    `save_error` is set) only ever appears once the operator has already
-    reached step DONE, where a click no longer adds a point (see
-    `run_interactive_mark_zones`'s `on_mouse`), so a second bar's extra
-    height is never something a click-coordinate calculation needs to
-    account for.
+    `_render_content`'s docstring). `content`'s own pixel (0, 0) lands at
+    one `_INSTRUCTION_BAR_HEIGHT` normally, or two when `save_error` is
+    set (the second bar pushes it down further) -- `run_interactive_mark_
+    zones`'s `on_mouse` has to track which, since a recovery click (the
+    exact case the error bar exists for) is a real click on the content.
     """
     bar = np.zeros((_INSTRUCTION_BAR_HEIGHT, content.shape[1], 3), dtype=np.uint8)
     instructions = _STEP_INSTRUCTIONS[session.step]
@@ -188,11 +186,17 @@ def run_interactive_mark_zones(
         nonlocal save_error
         if event != cv2.EVENT_LBUTTONDOWN:
             return
-        # The instruction bar sits above the content (see
-        # `_compose_display_frame`), so content pixel (0, 0) is at window
-        # y = _INSTRUCTION_BAR_HEIGHT, not 0 -- a click inside the bar
-        # itself (negative content_y) isn't a content click at all.
-        content_y = y - _INSTRUCTION_BAR_HEIGHT
+        # The instruction bar (plus a second error bar, while `save_error`
+        # is set -- see `_compose_display_frame`) sits above the content,
+        # so content pixel (0, 0) is at window y = one or two bar heights,
+        # not 0 -- a click inside a bar itself (negative content_y) isn't
+        # a content click at all. Recovery clicks (the `Step.DONE` branch
+        # below) are exactly the case where the error bar is showing, so
+        # this has to track it -- an earlier version always subtracted
+        # only one bar height, silently mapping every recovery click ~30
+        # display pixels too high and picking the wrong seat (or none).
+        bar_count = 2 if save_error is not None else 1
+        content_y = y - bar_count * _INSTRUCTION_BAR_HEIGHT
         if content_y < 0:
             return
         point = (x / display_scale, content_y / display_scale)
