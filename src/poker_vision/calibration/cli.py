@@ -16,6 +16,10 @@ Two families of subcommand:
   reference photo (REQ-10a) -- the actual geometry work lives in
   `mark_zones.py`/`mark_zones_session.py`, this subcommand just delegates
   to `mark_zones_interactive.run_interactive_mark_zones`.
+- `calib learn-table`: automatic runtime calibration for a new photo of the
+  same physical table design (REQ-10b), via feature matching against the
+  reference photo instead of re-running `mark-zones` -- delegates to
+  `learn_table.learn_table_calibration`.
 
 Thin argument parsing + JSON/dict plumbing only; the actual geometry (zone
 topology, homography solving) lives in `calibration/zones.py`,
@@ -38,9 +42,19 @@ from poker_vision.calibration.authoring import (
 )
 from poker_vision.calibration.compile import compile_calibration
 from poker_vision.calibration.geometry import TableUnit
+from poker_vision.calibration.learn_table import (
+    DEFAULT_ASPECT_RATIO_TOLERANCE,
+    DEFAULT_CENTER_STRIP_MARGIN_RATIO,
+    DEFAULT_MIN_INLIER_RATIO,
+    DEFAULT_MIN_INLIER_SPREAD_RATIO,
+    DEFAULT_MIN_MATCH_COUNT,
+    DEFAULT_RANSAC_REPROJ_THRESHOLD_PIXELS,
+    LearnTableConfig,
+    learn_table_calibration,
+)
 from poker_vision.calibration.mark_zones import DEFAULT_CHIP_ZONE_INSET_PIXELS
 from poker_vision.calibration.mark_zones_interactive import run_interactive_mark_zones
-from poker_vision.calibration.runtime import write_calibration_runtime
+from poker_vision.calibration.runtime import load_calibration_runtime, write_calibration_runtime
 from poker_vision.calibration.skeleton import MIN_SEAT_COUNT, build_authoring_skeleton
 from poker_vision.config import Resolution
 
@@ -186,6 +200,39 @@ def _cmd_mark_zones(args: argparse.Namespace) -> int:
     )
 
 
+# --- learn-table (REQ-10b) ---------------------------------------------------
+
+
+def _cmd_learn_table(args: argparse.Namespace) -> int:
+    try:
+        reference = load_calibration_runtime(args.reference_runtime)
+        config = LearnTableConfig(
+            min_match_count=args.min_match_count,
+            min_inlier_ratio=args.min_inlier_ratio,
+            min_inlier_spread_ratio=args.min_inlier_spread_ratio,
+            ransac_reproj_threshold=args.ransac_reproj_threshold,
+            center_strip_margin_ratio=args.center_strip_margin_ratio,
+            aspect_ratio_tolerance=args.aspect_ratio_tolerance,
+        )
+        runtime = learn_table_calibration(
+            reference,
+            reference_image_path=args.reference_image,
+            live_image_path=args.live_image,
+            based_on=(
+                f"calib learn-table: reference_runtime={args.reference_runtime}, "
+                f"reference_image={args.reference_image}, live_image={args.live_image}"
+            ),
+            table_id=args.table_id,
+            config=config,
+        )
+        write_calibration_runtime(runtime, args.out)
+    except (ValueError, ValidationError, OSError) as exc:
+        print(f"calib learn-table: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    print(f"learned table calibration from '{args.live_image}' -> '{args.out}'")
+    return EXIT_OK
+
+
 # --- edit (REQ-10) -----------------------------------------------------------
 
 
@@ -313,6 +360,50 @@ def _build_parser() -> argparse.ArgumentParser:
         "--chip-zone-inset-pixels", type=float, default=DEFAULT_CHIP_ZONE_INSET_PIXELS
     )
     mark_zones_parser.set_defaults(func=_cmd_mark_zones)
+
+    learn_table_parser = subparsers.add_parser(
+        "learn-table",
+        help="Derive a runtime calibration for a new photo of the same table design (REQ-10b)",
+        description=(
+            "Derive a runtime calibration for a new photo of the same table design "
+            "(REQ-10b). --live-image should show an empty table, same as the reference "
+            "photo calib mark-zones was originally run against -- cards/chips across "
+            "the center strip reduce match reliability and may need --min-inlier-ratio/"
+            "--min-match-count loosened from their defaults."
+        ),
+    )
+    learn_table_parser.add_argument("--reference-runtime", required=True, type=Path)
+    learn_table_parser.add_argument("--reference-image", required=True, type=Path)
+    learn_table_parser.add_argument("--live-image", required=True, type=Path)
+    learn_table_parser.add_argument("--out", required=True, type=Path)
+    learn_table_parser.add_argument(
+        "--table-id", help="default: reuse the reference calibration's table_id"
+    )
+    learn_table_parser.add_argument(
+        "--min-match-count", type=int, default=DEFAULT_MIN_MATCH_COUNT
+    )
+    learn_table_parser.add_argument(
+        "--min-inlier-ratio", type=float, default=DEFAULT_MIN_INLIER_RATIO
+    )
+    learn_table_parser.add_argument(
+        "--min-inlier-spread-ratio",
+        type=float,
+        default=DEFAULT_MIN_INLIER_SPREAD_RATIO,
+        help="min fraction of the center-strip mask's extent RANSAC inliers must span",
+    )
+    learn_table_parser.add_argument(
+        "--ransac-reproj-threshold", type=float, default=DEFAULT_RANSAC_REPROJ_THRESHOLD_PIXELS
+    )
+    learn_table_parser.add_argument(
+        "--center-strip-margin-ratio", type=float, default=DEFAULT_CENTER_STRIP_MARGIN_RATIO
+    )
+    learn_table_parser.add_argument(
+        "--aspect-ratio-tolerance",
+        type=float,
+        default=DEFAULT_ASPECT_RATIO_TOLERANCE,
+        help="relative tolerance for a photo's aspect ratio vs. the reference's",
+    )
+    learn_table_parser.set_defaults(func=_cmd_learn_table)
 
     edit_parser = subparsers.add_parser("edit", help="Edit an existing authoring JSON in place")
     edit_subparsers = edit_parser.add_subparsers(dest="edit_command", required=True)
