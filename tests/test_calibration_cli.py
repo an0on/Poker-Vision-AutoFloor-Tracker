@@ -1,9 +1,13 @@
-"""REQ-9 / REQ-10: the `calib` CLI (`compile`, `validate`, `create`, `edit`)."""
+"""REQ-9 / REQ-10 / REQ-10b: the `calib` CLI (`compile`, `validate`, `create`,
+`edit`, `learn-table`).
+"""
 
 from __future__ import annotations
 
 import json
 
+import cv2
+import numpy as np
 import pytest
 
 from poker_vision.calibration.cli import main
@@ -386,6 +390,237 @@ def test_edit_out_writes_to_separate_file_leaving_original_untouched(tmp_path):
     assert exit_code == 0
     assert authoring_path.read_text() == original
     assert out_path.exists()
+
+
+# --- learn-table (REQ-10b) ---------------------------------------------------
+#
+# Thin argument-parsing/plumbing coverage only -- the actual feature-
+# matching/homography logic is unit-tested against many more scenarios in
+# test_calibration_learn_table.py. Reference/live photos here are the same
+# kind of synthetic "textured center strip" fixture used there.
+
+_LEARN_TABLE_WIDTH, _LEARN_TABLE_HEIGHT = 1200, 900
+_LEARN_TABLE_IDENTITY = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+
+
+def _learn_table_reference_runtime_dict() -> dict:
+    return {
+        "schema_version": "1.1",
+        "table_id": "reference_table",
+        "based_on": "x",
+        "inference_resolution": {"width": _LEARN_TABLE_WIDTH, "height": _LEARN_TABLE_HEIGHT},
+        "camera": {
+            "fx": 1400.0,
+            "fy": 1400.0,
+            "cx": _LEARN_TABLE_WIDTH / 2,
+            "cy": _LEARN_TABLE_HEIGHT / 2,
+        },
+        "distortion": {"k1": 0.0, "k2": 0.0, "p1": 0.0, "p2": 0.0, "k3": 0.0},
+        "homography": {"forward": _LEARN_TABLE_IDENTITY, "inverse": _LEARN_TABLE_IDENTITY},
+        "table": {"width": _LEARN_TABLE_WIDTH, "height": _LEARN_TABLE_HEIGHT, "unit": "mm"},
+        "seats": [
+            {
+                "seat_id": "seat_1",
+                "zones": {
+                    "player_area": {
+                        "points": [
+                            {"x": 0, "y": 0},
+                            {"x": 200, "y": 0},
+                            {"x": 200, "y": 150},
+                            {"x": 0, "y": 150},
+                        ]
+                    },
+                    "chip_zone": {
+                        "points": [
+                            {"x": 20, "y": 20},
+                            {"x": 150, "y": 20},
+                            {"x": 150, "y": 120},
+                            {"x": 20, "y": 120},
+                        ]
+                    },
+                },
+            }
+        ],
+        "zones": {
+            "board_zone": {
+                "points": [
+                    {"x": 550, "y": 400},
+                    {"x": 650, "y": 400},
+                    {"x": 650, "y": 500},
+                    {"x": 550, "y": 500},
+                ]
+            },
+            "dealer_area": {
+                "points": [
+                    {"x": 300, "y": 200},
+                    {"x": 900, "y": 200},
+                    {"x": 900, "y": 700},
+                    {"x": 300, "y": 700},
+                ]
+            },
+        },
+        "card_dealer_seat_id": "seat_1",
+    }
+
+
+def _learn_table_synthetic_reference_image() -> np.ndarray:
+    rng = np.random.default_rng(42)
+    image = np.full((_LEARN_TABLE_HEIGHT, _LEARN_TABLE_WIDTH), 100, dtype=np.uint8)
+    for _ in range(250):
+        cx = int(rng.integers(260, 940))
+        cy = int(rng.integers(160, 740))
+        radius = int(rng.integers(3, 14))
+        color = int(rng.integers(20, 230))
+        cv2.circle(image, (cx, cy), radius, color, -1)
+    return image
+
+
+def _learn_table_fixtures(tmp_path):
+    """Writes a reference runtime JSON + reference/live photos to `tmp_path`,
+    returns their paths as (reference_runtime, reference_image, live_image).
+    """
+    reference_runtime_path = tmp_path / "reference_runtime.json"
+    reference_runtime_path.write_text(json.dumps(_learn_table_reference_runtime_dict()))
+
+    reference_image = _learn_table_synthetic_reference_image()
+    reference_image_path = tmp_path / "reference.png"
+    cv2.imwrite(str(reference_image_path), reference_image)
+
+    affine = cv2.getRotationMatrix2D(
+        (_LEARN_TABLE_WIDTH / 2, _LEARN_TABLE_HEIGHT / 2), angle=7.0, scale=0.8
+    )
+    affine[0, 2] += 40
+    affine[1, 2] += -20
+    warp = np.vstack([affine, [0.0, 0.0, 1.0]]).astype(np.float64)
+    live_image = cv2.warpPerspective(
+        reference_image, warp, (_LEARN_TABLE_WIDTH, _LEARN_TABLE_HEIGHT), borderValue=100
+    )
+    live_image_path = tmp_path / "live.png"
+    cv2.imwrite(str(live_image_path), live_image)
+
+    return reference_runtime_path, reference_image_path, live_image_path
+
+
+def test_learn_table_writes_loadable_runtime(tmp_path):
+    reference_runtime_path, reference_image_path, live_image_path = _learn_table_fixtures(
+        tmp_path
+    )
+    out_path = tmp_path / "learned_runtime.json"
+    exit_code = main(
+        [
+            "learn-table",
+            "--reference-runtime",
+            str(reference_runtime_path),
+            "--reference-image",
+            str(reference_image_path),
+            "--live-image",
+            str(live_image_path),
+            "--out",
+            str(out_path),
+        ]
+    )
+    assert exit_code == 0
+    runtime = load_calibration_runtime(out_path)
+    assert runtime.table_id == "reference_table"
+    assert len(runtime.seats) == 1
+
+
+def test_learn_table_table_id_override(tmp_path):
+    reference_runtime_path, reference_image_path, live_image_path = _learn_table_fixtures(
+        tmp_path
+    )
+    out_path = tmp_path / "learned_runtime.json"
+    exit_code = main(
+        [
+            "learn-table",
+            "--reference-runtime",
+            str(reference_runtime_path),
+            "--reference-image",
+            str(reference_image_path),
+            "--live-image",
+            str(live_image_path),
+            "--out",
+            str(out_path),
+            "--table-id",
+            "new_physical_table",
+        ]
+    )
+    assert exit_code == 0
+    assert load_calibration_runtime(out_path).table_id == "new_physical_table"
+
+
+def test_learn_table_missing_reference_runtime_returns_error(tmp_path, capsys):
+    _, reference_image_path, live_image_path = _learn_table_fixtures(tmp_path)
+    out_path = tmp_path / "learned_runtime.json"
+    exit_code = main(
+        [
+            "learn-table",
+            "--reference-runtime",
+            str(tmp_path / "does_not_exist.json"),
+            "--reference-image",
+            str(reference_image_path),
+            "--live-image",
+            str(live_image_path),
+            "--out",
+            str(out_path),
+        ]
+    )
+    assert exit_code == 1
+    assert not out_path.exists()
+    assert capsys.readouterr().err
+
+
+def test_learn_table_unreliable_live_photo_returns_error(tmp_path, capsys):
+    reference_runtime_path, reference_image_path, _ = _learn_table_fixtures(tmp_path)
+    blank_live_path = tmp_path / "blank.png"
+    blank_image = np.full((_LEARN_TABLE_HEIGHT, _LEARN_TABLE_WIDTH), 128, dtype=np.uint8)
+    cv2.imwrite(str(blank_live_path), blank_image)
+    out_path = tmp_path / "learned_runtime.json"
+    exit_code = main(
+        [
+            "learn-table",
+            "--reference-runtime",
+            str(reference_runtime_path),
+            "--reference-image",
+            str(reference_image_path),
+            "--live-image",
+            str(blank_live_path),
+            "--out",
+            str(out_path),
+        ]
+    )
+    assert exit_code == 1
+    assert not out_path.exists()
+    assert "calib learn-table" in capsys.readouterr().err
+
+
+def test_learn_table_custom_thresholds_are_passed_through(tmp_path):
+    reference_runtime_path, reference_image_path, live_image_path = _learn_table_fixtures(
+        tmp_path
+    )
+    out_path = tmp_path / "learned_runtime.json"
+    # An unreasonably strict inlier-ratio requirement (higher than the
+    # matcher can realistically achieve) must make the CLI fail even
+    # though the default thresholds succeed against the same fixtures --
+    # proof the flag actually reaches `LearnTableConfig`, not just that it
+    # parses.
+    exit_code = main(
+        [
+            "learn-table",
+            "--reference-runtime",
+            str(reference_runtime_path),
+            "--reference-image",
+            str(reference_image_path),
+            "--live-image",
+            str(live_image_path),
+            "--out",
+            str(out_path),
+            "--min-inlier-ratio",
+            "0.999",
+        ]
+    )
+    assert exit_code == 1
+    assert not out_path.exists()
 
 
 # --- end-to-end: create -> edit -> validate -> compile -------------------------
