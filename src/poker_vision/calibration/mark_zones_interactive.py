@@ -43,6 +43,7 @@ _COLOR_INNER_OVAL_CURRENT = (0, 255, 0)
 _COLOR_INNER_OVAL_DONE = (0, 180, 0)
 _COLOR_BOARD = (255, 0, 255)
 _COLOR_TEXT = (255, 255, 255)
+_COLOR_ERROR = (60, 60, 255)
 
 _FONT = cv2.FONT_HERSHEY_SIMPLEX
 _INSTRUCTION_BAR_HEIGHT = 30
@@ -115,21 +116,33 @@ def _render_content(base_image: np.ndarray, session: ClickSession) -> np.ndarray
     return image
 
 
-def _compose_display_frame(content: np.ndarray, session: ClickSession) -> np.ndarray:
-    """Stack a fixed-height instruction bar above the (already display-sized)
-    `content` frame -- a separate strip, not drawn over the content and
-    scaled together with it, so nothing photographed near the top edge is
-    ever hidden (see `_render_content`'s docstring). `content`'s own pixel
-    (0, 0) therefore lands at bar height in the final window image; callers
-    converting a click back to full-resolution coordinates must subtract
-    `_INSTRUCTION_BAR_HEIGHT` first (see `run_interactive_mark_zones`).
+def _compose_display_frame(
+    content: np.ndarray, session: ClickSession, save_error: str | None = None
+) -> np.ndarray:
+    """Stack a fixed-height instruction bar (plus, if `save_error` is set, a
+    second error bar) above the (already display-sized) `content` frame --
+    separate strips, not drawn over the content and scaled together with
+    it, so nothing photographed near the top edge is ever hidden (see
+    `_render_content`'s docstring). `content`'s own pixel (0, 0) always
+    lands at `_INSTRUCTION_BAR_HEIGHT`, never lower: the error bar (when
+    `save_error` is set) only ever appears once the operator has already
+    reached step DONE, where a click no longer adds a point (see
+    `run_interactive_mark_zones`'s `on_mouse`), so a second bar's extra
+    height is never something a click-coordinate calculation needs to
+    account for.
     """
     bar = np.zeros((_INSTRUCTION_BAR_HEIGHT, content.shape[1], 3), dtype=np.uint8)
     instructions = _STEP_INSTRUCTIONS[session.step]
     if session.step is Step.SEATS:
         instructions += f" ({len(session.seats)}/10 done)"
     cv2.putText(bar, instructions, (8, 20), _FONT, 0.6, _COLOR_TEXT, 1, cv2.LINE_AA)
-    return np.vstack([bar, content])
+    bars = [bar]
+    if save_error is not None:
+        error_bar = np.zeros((_INSTRUCTION_BAR_HEIGHT, content.shape[1], 3), dtype=np.uint8)
+        message = f"Save failed: {save_error}"
+        cv2.putText(error_bar, message[:120], (8, 20), _FONT, 0.55, _COLOR_ERROR, 1, cv2.LINE_AA)
+        bars.append(error_bar)
+    return np.vstack([*bars, content])
 
 
 def run_interactive_mark_zones(
@@ -176,12 +189,26 @@ def run_interactive_mark_zones(
     cv2.namedWindow(_WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
     cv2.setMouseCallback(_WINDOW_NAME, on_mouse)
 
+    # Set only by a failed 's' (build/REQ-11 validation raised) below --
+    # shown as a second bar until the operator changes something (undo) or
+    # tries 's' again. Deliberately does *not* close the window or discard
+    # the session on failure: the window used to close unconditionally the
+    # instant 's' was pressed, before validation ever ran, so a rejected
+    # session silently vanished with only a terminal print (easy to miss,
+    # e.g. behind the now-gone window) explaining why -- confirmed against
+    # a real session where exactly that happened. `authoring` is only ever
+    # read after the loop below breaks out on a successful save, so it's
+    # unbound on any other exit path (Esc/exception), which is fine --
+    # those paths return before reaching it.
+    save_error: str | None = None
+    authoring: CalibrationAuthoring
+
     try:
         while True:
             content = _render_content(image, session)
             if display_scale < 1.0:
                 content = cv2.resize(content, display_size, interpolation=cv2.INTER_AREA)
-            cv2.imshow(_WINDOW_NAME, _compose_display_frame(content, session))
+            cv2.imshow(_WINDOW_NAME, _compose_display_frame(content, session, save_error))
             key = cv2.waitKey(20) & 0xFF
             if key == _KEY_ESC:
                 print("mark-zones: aborted, nothing written", file=sys.stderr)
@@ -198,19 +225,21 @@ def run_interactive_mark_zones(
                     print(f"mark-zones: {exc}", file=sys.stderr)
             if key in (_KEY_BACKSPACE, ord("u")):
                 session.undo()
+                save_error = None  # the operator is already trying to fix something
             if key == ord("s") and session.step is Step.DONE:
-                break
+                try:
+                    marked = session.build()
+                    authoring = build_authoring_from_marked_zones(
+                        marked, table_id=table_id, chip_zone_inset_pixels=chip_zone_inset_pixels
+                    )
+                except (ValueError, ValidationError) as exc:
+                    save_error = str(exc)
+                    print(f"mark-zones: {exc}", file=sys.stderr)
+                else:
+                    break
     finally:
         cv2.destroyWindow(_WINDOW_NAME)
 
-    try:
-        marked = session.build()
-        authoring = build_authoring_from_marked_zones(
-            marked, table_id=table_id, chip_zone_inset_pixels=chip_zone_inset_pixels
-        )
-    except (ValueError, ValidationError) as exc:
-        print(f"mark-zones: {exc}", file=sys.stderr)
-        return 1
     write_calibration_authoring(authoring, out_path)
     print(f"mark-zones: wrote '{out_path}'")
     _show_and_save_result_preview(image, authoring, out_path)
