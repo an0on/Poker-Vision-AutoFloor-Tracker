@@ -2,7 +2,7 @@
 clicks on a reference photo into a `CalibrationAuthoring`.
 
 Deliberately has no OpenCV window / mouse-callback code -- that lives in
-`tools/mark_zones_cli.py` and just collects raw click coordinates before
+`mark_zones_interactive.py` and just collects raw click coordinates before
 calling into this module. Everything here is plain functions over tuples,
 so it's unit-testable without a display.
 
@@ -18,21 +18,30 @@ re-measuring anything either.
 
 Because table coordinates equal photo pixel coordinates here, the
 authoring's `homography` is an identity mapping, solved from the photo's
-own 4 corners -- see `_identity_homography_from_image_corners`. `dealer_area`
-(REQ-7's "Action Area", the inner-oval region) is likewise not clicked
-separately: `infer_inner_boundary_polygon` derives it from the seat
-polygons the operator already clicked, since two manual arc-center clicks
-per oval (originally REQ-10a's design) turned out to be a fragile way to
-mark a precise curve by hand in practice -- a wrongly-placed center click
-produces a wildly wrong radius with no way to visually sanity-check it
-before the fact, whereas both derivations here only ever use points
-already validated as real seat corners.
+own 4 corners -- see `_identity_homography_from_image_corners`.
+
+`dealer_area` (REQ-7's "Action Area", the inner-oval region) IS a separate
+manual click step -- an earlier design tried to derive it from the already
+-clicked seat corners instead (closest-to-centroid corner pairs), but that
+measure isn't reliably "inner vs. outer" on an elongated oval table with
+uneven per-seat click density: a genuine rail corner on a seat far off the
+table's long axis can measure numerically closer to the table centroid than
+a different seat's own true inner corner. So `dealer_area` is a freehand
+polyline the operator traces along the true printed inner-oval curve
+(clicking arbitrarily many points, the same style already used for a
+seat's own outer rail curve) -- not the older "3-point arc" scheme
+(start/center/end): a center click placed even slightly wrong there
+produces an arbitrarily wrong radius with no way to sanity-check it before
+saving, which is what motivated dropping arc-parameter ovals in the first
+place. A freehand trace has no such single fragile point.
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+
+from pydantic import ValidationError
 
 from poker_vision.calibration.authoring import (
     CALIBRATION_AUTHORING_SCHEMA_VERSION,
@@ -49,7 +58,25 @@ from poker_vision.config import Resolution
 
 Point = tuple[float, float]
 
-DEFAULT_CHIP_ZONE_SHRINK_FACTOR = 0.5
+# A small, generic pixel margin, not derived from any on-table printed
+# feature (a proposed "size it off the DOPO POKER lettering's height" rule
+# was rejected in favor of this -- table branding/print size isn't a stable
+# thing to key a default off of across different physical table designs,
+# where a fixed small pixel default travels fine). Zero on the rail-facing
+# side always, regardless of this value -- see `_derive_chip_zone`.
+DEFAULT_CHIP_ZONE_INSET_PIXELS = 10.0
+
+# An edge counts as "rail" (gets zero chip_zone margin) only if its outward
+# normal points within ~60 degrees of straight away from the table center --
+# i.e. it's part of the curved/straight outer boundary the operator traced
+# along the physical rail, however many points that took. Every other edge
+# (both side edges facing a neighbouring seat, and the inner edge facing the
+# action zone) necessarily falls outside that cone and gets inset instead --
+# one classification handles "no margin to rail" and "minimal margin to
+# neighbours/action zone" identically, without needing separate seat-
+# adjacency data to tell "next to a neighbour" apart from "facing the board".
+_RAIL_NORMAL_MIN_DOT = 0.5  # cos(60 degrees)
+
 _MIN_SEATS = 3
 # Numerically arbitrary (undistortion is an exact identity when distortion
 # is all-zero, see `undistort.py`) -- kept only for a plausible-looking
@@ -65,14 +92,15 @@ class MarkedZones:
     session (e.g. click order) -- deliberately *not* assumed to already be
     in clockwise physical order; `number_seats_clockwise` derives that
     itself from each polygon's centroid, so a scrambled click order can't
-    silently mis-number seats. There is no separate inner/outer-oval click
-    data: `build_authoring_from_marked_zones` derives both `dealer_area`
-    and the homography from `seat_polygons`/`image_size` alone (see this
-    module's docstring for why).
+    silently mis-number seats. `inner_oval_points` is the operator's own
+    freehand trace of the action-area boundary and is used for
+    `dealer_area` directly, unmodified (see this module's docstring for
+    why it isn't derived from `seat_polygons` instead).
     """
 
     seat_polygons: dict[str, list[Point]]
     dealer_seat_key: str
+    inner_oval_points: list[Point]
     board_zone_points: list[Point]
     image_size: tuple[int, int]
 
@@ -81,53 +109,189 @@ def _dist(a: Point, b: Point) -> float:
     return math.hypot(a[0] - b[0], a[1] - b[1])
 
 
+def _dot(a: Point, b: Point) -> float:
+    return a[0] * b[0] + a[1] * b[1]
+
+
+def _unit(vector: Point) -> Point:
+    length = math.hypot(vector[0], vector[1])
+    if length == 0:
+        raise ValueError("cannot normalize a zero-length vector")
+    return (vector[0] / length, vector[1] / length)
+
+
 def _polygon_centroid(points: list[Point]) -> Point:
     """Vertex-average centroid -- good enough for seat ordering/chip-zone
-    shrink (unlike `geometry.polygon_centroid`'s area-weighted one, which
-    `topology`'s REQ-11 checks need for exactness, ordering by angle only
-    needs a point *roughly* in the middle).
+    derivation (unlike `geometry.polygon_centroid`'s area-weighted one,
+    which `topology`'s REQ-11 checks need for exactness, both only need a
+    point *roughly* in the middle).
     """
     n = len(points)
     return (sum(p[0] for p in points) / n, sum(p[1] for p in points) / n)
 
 
-def _shrink_toward_centroid(points: list[Point], factor: float) -> list[Point]:
-    cx, cy = _polygon_centroid(points)
-    return [(cx + factor * (x - cx), cy + factor * (y - cy)) for x, y in points]
-
-
-def infer_inner_boundary_polygon(seat_polygons: dict[str, list[Point]]) -> list[Point]:
-    """Derive `dealer_area` (REQ-7's "Action Area") from the already-clicked
-    seat wedges, instead of a separate manual oval-click step.
-
-    For each seat, its two corners closest to the table's overall centroid
-    are the ones facing the board -- an adjacent seat's own closest pair
-    meets that same boundary, since neighbouring wedges share it. Collecting
-    every seat's closest pair and sorting all of them by angle around the
-    table centroid (the same technique `number_seats_clockwise` uses to
-    order seats) produces a simple, star-shaped polygon hugging the true
-    inner boundary -- correct for any seat point count (>= 3, REQ-10a's
-    per-seat minimum) or click winding, and immune to the "manually click a
-    circle's center" failure mode that motivated dropping the oval-click
-    steps in the first place (a slightly mis-clicked corner only nudges the
-    boundary a little; a mis-clicked arc-center could blow the whole curve
-    up to any radius).
+def _polygon_signed_area(points: list[Point]) -> float:
+    """Shoelace signed area -- its *sign* gives the polygon's winding
+    direction (same formula/convention as `geometry.polygon_signed_area`,
+    reimplemented here for plain tuples rather than `TablePoint`s, since
+    this module works in raw click coordinates before any of that gets
+    constructed).
     """
-    centroids = [_polygon_centroid(points) for points in seat_polygons.values()]
-    table_centroid = (
-        sum(c[0] for c in centroids) / len(centroids),
-        sum(c[1] for c in centroids) / len(centroids),
-    )
+    total = 0.0
+    n = len(points)
+    for i in range(n):
+        x1, y1 = points[i]
+        x2, y2 = points[(i + 1) % n]
+        total += x1 * y2 - x2 * y1
+    return total / 2.0
 
-    inner_points: list[Point] = []
-    for points in seat_polygons.values():
-        closest_two = sorted(points, key=lambda p: _dist(p, table_centroid))[:2]
-        inner_points.extend(closest_two)
 
-    def angle(point: Point) -> float:
-        return math.atan2(point[1] - table_centroid[1], point[0] - table_centroid[0])
+def _edge_outward_unit_normal(p1: Point, p2: Point, positive_winding: bool) -> Point:
+    """The unit normal of edge `p1`->`p2` that points away from the
+    polygon's interior, given whether the *whole* polygon winds positively
+    (`_polygon_signed_area(points) > 0`).
 
-    return sorted(inner_points, key=angle)
+    Deliberately not "whichever side is farther from the centroid": that
+    heuristic assumes the interior reference point sits on the interior
+    side of every edge, true for a convex or star-shaped polygon but not
+    for an arbitrary concave one (a seat with a genuine notch can easily
+    have an edge whose interior side isn't the side its own centroid is
+    on) -- REQ-11 explicitly allows concave `player_area` polygons, and
+    this reversed a real one's edges, silently producing an outward-offset
+    (self-intersecting or escaping) chip_zone instead of an inward one.
+    Winding direction is a single, whole-polygon fact (Green's theorem:
+    interior is consistently on one fixed side of every directed edge, for
+    *any* simple polygon, convex or not), so deriving each edge's outward
+    side from it is correct regardless of local shape.
+    """
+    dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+    length = math.hypot(dx, dy)
+    if length == 0:
+        raise ValueError(f"degenerate zero-length polygon edge at {p1}")
+    if positive_winding:
+        return (dy / length, -dx / length)
+    return (-dy / length, dx / length)
+
+
+def _line_intersection(
+    point_a: Point, normal_a: Point, point_b: Point, normal_b: Point
+) -> Point | None:
+    """Where the two lines (each given as a point on it + its normal) cross,
+    or `None` for (near-)parallel lines -- no crossing exists then (or, for
+    truly coincident lines, infinitely many); the caller (`_offset_vertex`)
+    handles that case using the actual vertex, not one of these lines' own
+    arbitrary anchor points.
+    """
+    det = normal_a[0] * normal_b[1] - normal_a[1] * normal_b[0]
+    if abs(det) < 1e-9:
+        return None
+    rhs_a = _dot(point_a, normal_a)
+    rhs_b = _dot(point_b, normal_b)
+    x = (rhs_a * normal_b[1] - rhs_b * normal_a[1]) / det
+    y = (normal_a[0] * rhs_b - normal_b[0] * rhs_a) / det
+    return (x, y)
+
+
+_MITER_LIMIT_FACTOR = 4.0
+
+
+def _offset_vertex(
+    vertex: Point,
+    point_a: Point,
+    normal_a: Point,
+    offset_a: float,
+    point_b: Point,
+    normal_b: Point,
+    offset_b: float,
+) -> Point:
+    """One vertex's new position: the two adjacent (possibly offset) edge
+    lines' intersection, unless that miter point lands unreasonably far
+    away (see `_derive_chip_zone`'s docstring) -- then the bevel fallback,
+    the average of each edge's own straight-perpendicular offset of
+    `vertex`.
+
+    The same bevel also covers the (near-)parallel case (three collinear
+    consecutive clicks, a normal thing to have in a freehand curve trace):
+    `_line_intersection` returns `None` there since two parallel lines
+    don't cross (or, if exactly coincident, cross everywhere) -- an
+    earlier version fell back to one of the *lines'* own anchor points
+    instead of `vertex`, which silently folded that vertex back towards
+    the previous one instead of offsetting it in place.
+    """
+    miter = _line_intersection(point_a, normal_a, point_b, normal_b)
+    max_offset = max(offset_a, offset_b)
+    miter_limit = _MITER_LIMIT_FACTOR * max_offset
+    use_bevel = miter is None or (max_offset > 0 and _dist(vertex, miter) > miter_limit)
+    if use_bevel:
+        bevel_a = (vertex[0] - normal_a[0] * offset_a, vertex[1] - normal_a[1] * offset_a)
+        bevel_b = (vertex[0] - normal_b[0] * offset_b, vertex[1] - normal_b[1] * offset_b)
+        return ((bevel_a[0] + bevel_b[0]) / 2, (bevel_a[1] + bevel_b[1]) / 2)
+    return miter
+
+
+def _derive_chip_zone(
+    points: list[Point], table_centroid: Point, inset_pixels: float
+) -> list[Point]:
+    """One seat's `chip_zone`: `points` (its `player_area`) with every
+    non-rail edge's line pulled inward by `inset_pixels` and the rail
+    edge(s) left untouched (see module docstring / `_RAIL_NORMAL_MIN_DOT`),
+    each vertex then recomputed as the intersection of its two adjacent
+    (possibly shifted) edge lines -- the standard mitered polygon-offset
+    construction.
+
+    Not a sequential "clip the whole polygon against each shifted edge in
+    turn": a seat's rail or inner boundary is often traced with many short
+    points along the real curve, and repeatedly clipping the *entire*
+    polygon against every one of those many near-parallel shifted lines
+    compounds -- each further clip can cut back into what the previous
+    clip already produced, eroding far more than `inset_pixels` in total
+    (confirmed on the real reference table's click data: some seats lost
+    over 80% of their area to a nominal 10px inset). Recomputing each
+    vertex from only its own two adjacent edges has no such compounding:
+    a vertex between two untouched rail edges lands back exactly on its
+    original position, and a run of many consecutive inset edges traces a
+    properly offset curve through their pairwise intersections instead.
+
+    That per-vertex intersection ("miter join", in stroke-rendering terms)
+    has its own known failure mode at a sharp or reflex corner: real click
+    traces have those too (confirmed on the real reference table -- a
+    seat's two adjacent edges meeting at a tight angle), and the two
+    offset lines there can cross arbitrarily far from the original vertex,
+    the same spike a sharp miter join produces in vector graphics. Past a
+    `_MITER_LIMIT_FACTOR` multiple of the offset itself, `_offset_vertex`
+    falls back to a "bevel" (the average of each edge's own independently
+    offset point) instead of the raw line intersection -- bounded, and
+    exactly what every vector-graphics stroke renderer does for the same
+    reason.
+
+    Operates on the polygon's own edges directly rather than moving
+    individual vertices toward some reference point: an earlier design
+    shrank every vertex toward the seat's centroid uniformly, which eats
+    into the rail-facing side just as much as every other side (the exact
+    opposite of what a poker player playing this table needs, since chips
+    are stacked right up against the rail).
+    """
+    seat_centroid = _polygon_centroid(points)
+    outward = _unit((seat_centroid[0] - table_centroid[0], seat_centroid[1] - table_centroid[1]))
+    positive_winding = _polygon_signed_area(points) > 0
+
+    n = len(points)
+    edge_lines: list[tuple[Point, Point, float]] = []
+    for i in range(n):
+        p1, p2 = points[i], points[(i + 1) % n]
+        normal = _edge_outward_unit_normal(p1, p2, positive_winding)
+        offset = 0.0 if _dot(normal, outward) > _RAIL_NORMAL_MIN_DOT else inset_pixels
+        line_point = (p1[0] - normal[0] * offset, p1[1] - normal[1] * offset)
+        edge_lines.append((line_point, normal, offset))
+
+    chip_zone = []
+    for i in range(n):
+        point_a, normal_a, offset_a = edge_lines[i - 1]
+        point_b, normal_b, offset_b = edge_lines[i]
+        chip_zone.append(
+            _offset_vertex(points[i], point_a, normal_a, offset_a, point_b, normal_b, offset_b)
+        )
+    return chip_zone
 
 
 def number_seats_clockwise(
@@ -214,7 +378,7 @@ def build_authoring_from_marked_zones(
     marked: MarkedZones,
     table_id: str,
     *,
-    chip_zone_shrink_factor: float = DEFAULT_CHIP_ZONE_SHRINK_FACTOR,
+    chip_zone_inset_pixels: float = DEFAULT_CHIP_ZONE_INSET_PIXELS,
 ) -> CalibrationAuthoring:
     """Assemble a full `CalibrationAuthoring` from one marking session.
 
@@ -223,38 +387,57 @@ def build_authoring_from_marked_zones(
     player_area, ...) -- there is no separate "skip validation" path here,
     same as every other `calib` entry point (see `cli.py`'s docstring).
 
-    `chip_zone_shrink_factor` must be in `(0, 1]`: outside that range this
-    isn't a "shrink" at all -- 0 collapses every chip_zone to a single
-    point (rejected downstream anyway, as a degenerate `TablePolygon`), a
-    negative factor reflects each polygon through its own centroid (for a
-    convex seat wedge, that reflection can still land fully inside
-    `player_area`, so REQ-11 alone wouldn't catch it -- a "valid-looking"
-    chip_zone on the wrong side of the seat), and anything above 1 expands
-    rather than shrinks, which REQ-11 does catch, but only as a confusing
-    "chip_zone not contained in player_area" error instead of a clear one
-    naming the actual mistake.
+    `chip_zone_inset_pixels` must be `>= 0` -- a margin can't be negative
+    (that would mean expanding *past* the seat's own player_area, which
+    REQ-11 rejects anyway, but with a confusing "not contained" error
+    instead of one naming the actual mistake). `0` is a legitimate value
+    (chip_zone == player_area on every non-rail edge too), not rejected.
     """
-    if not (0 < chip_zone_shrink_factor <= 1):
-        raise ValueError(
-            f"chip_zone_shrink_factor must be in (0, 1], got {chip_zone_shrink_factor}"
-        )
-    seat_ids = number_seats_clockwise(marked.seat_polygons, marked.dealer_seat_key)
-    seats = [
-        CalibrationSeat(
-            seat_id=seat_ids[key],
-            zones=SeatZones(
-                player_area=_to_table_polygon(points),
-                chip_zone=_to_table_polygon(
-                    _shrink_toward_centroid(points, chip_zone_shrink_factor)
-                ),
-            ),
-        )
-        for key, points in marked.seat_polygons.items()
-    ]
+    if chip_zone_inset_pixels < 0:
+        raise ValueError(f"chip_zone_inset_pixels must be >= 0, got {chip_zone_inset_pixels}")
 
-    dealer_area_points = infer_inner_boundary_polygon(marked.seat_polygons)
+    seat_centroids = [_polygon_centroid(points) for points in marked.seat_polygons.values()]
+    table_centroid = (
+        sum(c[0] for c in seat_centroids) / len(seat_centroids),
+        sum(c[1] for c in seat_centroids) / len(seat_centroids),
+    )
+
+    seat_ids = number_seats_clockwise(marked.seat_polygons, marked.dealer_seat_key)
+    seats = []
+    for key, points in marked.seat_polygons.items():
+        # Validated before deriving chip_zone from it: a degenerate or
+        # self-intersecting player_area should fail with REQ-11's own
+        # clear message about *that*, not surface confusingly out of the
+        # unrelated chip_zone derivation below.
+        player_area = _to_table_polygon(points)
+        try:
+            chip_zone_points = _derive_chip_zone(points, table_centroid, chip_zone_inset_pixels)
+            chip_zone = _to_table_polygon(chip_zone_points)
+        except (ValueError, ValidationError) as exc:
+            # The likeliest real-world cause (confirmed against the actual
+            # reference table's click data): two adjacent player_area
+            # points a few pixels apart -- an accidental double-click while
+            # tracing -- are close enough that even a small inset swings
+            # the derived corner past nearby geometry. Re-tracing that
+            # seat without the near-duplicate point is the fix, not a
+            # smaller inset (a globally smaller inset for every other,
+            # cleanly-traced seat isn't the actual problem).
+            raise ValueError(
+                f"seat '{key}' ({seat_ids[key]}): chip_zone_inset_pixels="
+                f"{chip_zone_inset_pixels} produces an invalid chip_zone ({exc}). "
+                "Likely cause: two of this seat's player_area points are only a "
+                "few pixels apart (an accidental double-click) -- re-trace this "
+                "seat without the near-duplicate point."
+            ) from exc
+        seats.append(
+            CalibrationSeat(
+                seat_id=seat_ids[key],
+                zones=SeatZones(player_area=player_area, chip_zone=chip_zone),
+            )
+        )
+
     board_zone = _to_table_polygon(marked.board_zone_points)
-    dealer_area = _to_table_polygon(dealer_area_points)
+    dealer_area = _to_table_polygon(marked.inner_oval_points)
 
     width, height = marked.image_size
     resolution = Resolution(width=width, height=height)

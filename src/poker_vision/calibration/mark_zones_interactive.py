@@ -10,8 +10,12 @@ server loop) has no direct test coverage either -- the logic that
 both fully unit-tested.
 
 Controls: left-click adds a point; Enter/Space finishes the current seat
-polygon (SEATS step); Backspace/'u' undoes the last point; 's' saves once
-the session reaches DONE; Esc aborts without writing anything.
+polygon (SEATS step) or the inner-oval trace (INNER_OVAL step);
+Backspace/'u' undoes the last point; 's' saves once the session reaches
+DONE; Esc aborts without writing anything. If 's' is rejected (e.g. a
+seat's own points don't form a valid polygon), the window stays open and
+the error is shown -- click the seat to re-trace it, or press 'o' to
+re-trace the inner oval, instead of restarting the whole session.
 """
 
 from __future__ import annotations
@@ -26,7 +30,7 @@ from pydantic import ValidationError
 from poker_vision.calibration.authoring import CalibrationAuthoring, write_calibration_authoring
 from poker_vision.calibration.compile import compile_calibration
 from poker_vision.calibration.mark_zones import (
-    DEFAULT_CHIP_ZONE_SHRINK_FACTOR,
+    DEFAULT_CHIP_ZONE_INSET_PIXELS,
     Point,
     build_authoring_from_marked_zones,
 )
@@ -38,8 +42,11 @@ _WINDOW_NAME = "calib mark-zones"
 _COLOR_SEAT_DONE = (200, 120, 0)
 _COLOR_SEAT_CURRENT = (0, 255, 255)
 _COLOR_DEALER = (0, 0, 255)
+_COLOR_INNER_OVAL_CURRENT = (0, 255, 0)
+_COLOR_INNER_OVAL_DONE = (0, 180, 0)
 _COLOR_BOARD = (255, 0, 255)
 _COLOR_TEXT = (255, 255, 255)
+_COLOR_ERROR = (60, 60, 255)
 
 _FONT = cv2.FONT_HERSHEY_SIMPLEX
 _INSTRUCTION_BAR_HEIGHT = 30
@@ -60,6 +67,9 @@ _MAX_DISPLAY_DIMENSION = 1400
 _STEP_INSTRUCTIONS: dict[Step, str] = {
     Step.SEATS: "Click a seat's player_area corners, Enter/Space to finish it (need 10 seats)",
     Step.PICK_DEALER: "Click inside the seat that is the fixed card-dealer (Kartengeber) position",
+    Step.INNER_OVAL: (
+        "Trace the inner oval (action area) rail, point by point, Enter/Space to finish"
+    ),
     Step.BOARD_ZONE: "Click board_zone's 4 corners",
     Step.DONE: "Done -- 's' to save, Esc to discard",
 }
@@ -97,6 +107,11 @@ def _render_content(base_image: np.ndarray, session: ClickSession) -> np.ndarray
     if session.step is Step.SEATS:
         _draw_polyline(image, session.current_polygon, _COLOR_SEAT_CURRENT, closed=False)
 
+    if session.step is Step.INNER_OVAL:
+        _draw_polyline(image, session.inner_oval_points, _COLOR_INNER_OVAL_CURRENT, closed=False)
+    elif session.step in (Step.BOARD_ZONE, Step.DONE) and session.inner_oval_points:
+        _draw_polyline(image, session.inner_oval_points, _COLOR_INNER_OVAL_DONE, closed=True)
+
     if session.step is Step.BOARD_ZONE:
         _draw_polyline(image, session.board_zone_points, _COLOR_BOARD, closed=False)
     elif session.step is Step.DONE:
@@ -104,28 +119,40 @@ def _render_content(base_image: np.ndarray, session: ClickSession) -> np.ndarray
     return image
 
 
-def _compose_display_frame(content: np.ndarray, session: ClickSession) -> np.ndarray:
-    """Stack a fixed-height instruction bar above the (already display-sized)
-    `content` frame -- a separate strip, not drawn over the content and
-    scaled together with it, so nothing photographed near the top edge is
-    ever hidden (see `_render_content`'s docstring). `content`'s own pixel
-    (0, 0) therefore lands at bar height in the final window image; callers
-    converting a click back to full-resolution coordinates must subtract
-    `_INSTRUCTION_BAR_HEIGHT` first (see `run_interactive_mark_zones`).
+def _compose_display_frame(
+    content: np.ndarray, session: ClickSession, save_error: str | None = None
+) -> np.ndarray:
+    """Stack a fixed-height instruction bar (plus, if `save_error` is set, a
+    second error bar) above the (already display-sized) `content` frame --
+    separate strips, not drawn over the content and scaled together with
+    it, so nothing photographed near the top edge is ever hidden (see
+    `_render_content`'s docstring). `content`'s own pixel (0, 0) lands at
+    one `_INSTRUCTION_BAR_HEIGHT` normally, or two when `save_error` is
+    set (the second bar pushes it down further) -- `run_interactive_mark_
+    zones`'s `on_mouse` has to track which, since a recovery click (the
+    exact case the error bar exists for) is a real click on the content.
     """
     bar = np.zeros((_INSTRUCTION_BAR_HEIGHT, content.shape[1], 3), dtype=np.uint8)
     instructions = _STEP_INSTRUCTIONS[session.step]
     if session.step is Step.SEATS:
         instructions += f" ({len(session.seats)}/10 done)"
+    elif session.step is Step.DONE and save_error is not None:
+        instructions = "Click a seat, or 'o' for the oval, to re-trace it -- Esc to discard"
     cv2.putText(bar, instructions, (8, 20), _FONT, 0.6, _COLOR_TEXT, 1, cv2.LINE_AA)
-    return np.vstack([bar, content])
+    bars = [bar]
+    if save_error is not None:
+        error_bar = np.zeros((_INSTRUCTION_BAR_HEIGHT, content.shape[1], 3), dtype=np.uint8)
+        message = f"Save failed: {save_error}"
+        cv2.putText(error_bar, message[:120], (8, 20), _FONT, 0.55, _COLOR_ERROR, 1, cv2.LINE_AA)
+        bars.append(error_bar)
+    return np.vstack([*bars, content])
 
 
 def run_interactive_mark_zones(
     image_path: Path,
     out_path: Path,
     table_id: str,
-    chip_zone_shrink_factor: float = DEFAULT_CHIP_ZONE_SHRINK_FACTOR,
+    chip_zone_inset_pixels: float = DEFAULT_CHIP_ZONE_INSET_PIXELS,
 ) -> int:
     """Open `image_path` in a click-to-mark window and write the resulting
     `CalibrationAuthoring` to `out_path` on save (REQ-10a). Returns an exit
@@ -140,21 +167,53 @@ def run_interactive_mark_zones(
     display_scale = min(1.0, _MAX_DISPLAY_DIMENSION / max(width, height))
     display_size = (round(width * display_scale), round(height * display_scale))
 
+    # Set only by a failed 's' (build/REQ-11 validation raised) further
+    # down -- shown as a second bar until the operator reopens the failing
+    # seat/oval, undoes, or tries 's' again. Deliberately does *not* close
+    # the window or discard the session on failure: the window used to
+    # close unconditionally the instant 's' was pressed, before validation
+    # ever ran, so a rejected session silently vanished with only a
+    # terminal print (easy to miss, e.g. behind the now-gone window)
+    # explaining why -- confirmed against a real session where exactly
+    # that happened. `authoring` is only ever read after the loop below
+    # breaks out on a successful save, so it's unbound on any other exit
+    # path (Esc/exception), which is fine -- those paths return before
+    # reaching it.
+    save_error: str | None = None
+    authoring: CalibrationAuthoring
+
     def on_mouse(event: int, x: int, y: int, _flags: int, _userdata: object) -> None:
+        nonlocal save_error
         if event != cv2.EVENT_LBUTTONDOWN:
             return
-        # The instruction bar sits above the content (see
-        # `_compose_display_frame`), so content pixel (0, 0) is at window
-        # y = _INSTRUCTION_BAR_HEIGHT, not 0 -- a click inside the bar
-        # itself (negative content_y) isn't a content click at all.
-        content_y = y - _INSTRUCTION_BAR_HEIGHT
+        # The instruction bar (plus a second error bar, while `save_error`
+        # is set -- see `_compose_display_frame`) sits above the content,
+        # so content pixel (0, 0) is at window y = one or two bar heights,
+        # not 0 -- a click inside a bar itself (negative content_y) isn't
+        # a content click at all. Recovery clicks (the `Step.DONE` branch
+        # below) are exactly the case where the error bar is showing, so
+        # this has to track it -- an earlier version always subtracted
+        # only one bar height, silently mapping every recovery click ~30
+        # display pixels too high and picking the wrong seat (or none).
+        bar_count = 2 if save_error is not None else 1
+        content_y = y - bar_count * _INSTRUCTION_BAR_HEIGHT
         if content_y < 0:
             return
         point = (x / display_scale, content_y / display_scale)
         try:
             if session.step is Step.PICK_DEALER:
                 session.pick_dealer_at(point)
-            elif session.step is not Step.DONE:
+            elif session.step is Step.DONE:
+                # Only reachable after a failed 's' (see the loop below):
+                # a successful save breaks out of the loop and closes the
+                # window in the same iteration, so there is no frame in
+                # which DONE is showing without an error to click through.
+                if save_error is not None:
+                    seat_key = session.seat_at(point)
+                    if seat_key is not None:
+                        session.reopen_seat(seat_key)
+                        save_error = None
+            else:
                 session.add_point(point)
         except ValueError as exc:
             print(f"mark-zones: {exc}", file=sys.stderr)
@@ -170,7 +229,7 @@ def run_interactive_mark_zones(
             content = _render_content(image, session)
             if display_scale < 1.0:
                 content = cv2.resize(content, display_size, interpolation=cv2.INTER_AREA)
-            cv2.imshow(_WINDOW_NAME, _compose_display_frame(content, session))
+            cv2.imshow(_WINDOW_NAME, _compose_display_frame(content, session, save_error))
             key = cv2.waitKey(20) & 0xFF
             if key == _KEY_ESC:
                 print("mark-zones: aborted, nothing written", file=sys.stderr)
@@ -180,21 +239,31 @@ def run_interactive_mark_zones(
                     session.finish_polygon()
                 except ValueError as exc:
                     print(f"mark-zones: {exc}", file=sys.stderr)
+            if key in (_KEY_ENTER, _KEY_SPACE) and session.step is Step.INNER_OVAL:
+                try:
+                    session.finish_inner_oval()
+                except ValueError as exc:
+                    print(f"mark-zones: {exc}", file=sys.stderr)
             if key in (_KEY_BACKSPACE, ord("u")):
                 session.undo()
+                save_error = None  # the operator is already trying to fix something
+            if key == ord("o") and session.step is Step.DONE and save_error is not None:
+                session.reopen_inner_oval()
+                save_error = None
             if key == ord("s") and session.step is Step.DONE:
-                break
+                try:
+                    marked = session.build()
+                    authoring = build_authoring_from_marked_zones(
+                        marked, table_id=table_id, chip_zone_inset_pixels=chip_zone_inset_pixels
+                    )
+                except (ValueError, ValidationError) as exc:
+                    save_error = str(exc)
+                    print(f"mark-zones: {exc}", file=sys.stderr)
+                else:
+                    break
     finally:
         cv2.destroyWindow(_WINDOW_NAME)
 
-    try:
-        marked = session.build()
-        authoring = build_authoring_from_marked_zones(
-            marked, table_id=table_id, chip_zone_shrink_factor=chip_zone_shrink_factor
-        )
-    except (ValueError, ValidationError) as exc:
-        print(f"mark-zones: {exc}", file=sys.stderr)
-        return 1
     write_calibration_authoring(authoring, out_path)
     print(f"mark-zones: wrote '{out_path}'")
     _show_and_save_result_preview(image, authoring, out_path)

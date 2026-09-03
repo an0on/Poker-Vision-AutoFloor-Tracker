@@ -38,7 +38,7 @@ from poker_vision.calibration.authoring import (
 )
 from poker_vision.calibration.compile import compile_calibration
 from poker_vision.calibration.geometry import TableUnit
-from poker_vision.calibration.mark_zones import DEFAULT_CHIP_ZONE_SHRINK_FACTOR
+from poker_vision.calibration.mark_zones import DEFAULT_CHIP_ZONE_INSET_PIXELS
 from poker_vision.calibration.mark_zones_interactive import run_interactive_mark_zones
 from poker_vision.calibration.runtime import write_calibration_runtime
 from poker_vision.calibration.skeleton import MIN_SEAT_COUNT, build_authoring_skeleton
@@ -182,7 +182,7 @@ def _cmd_mark_zones(args: argparse.Namespace) -> int:
         image_path=args.image,
         out_path=args.out,
         table_id=args.table_id,
-        chip_zone_shrink_factor=args.chip_zone_shrink_factor,
+        chip_zone_inset_pixels=args.chip_zone_inset_pixels,
     )
 
 
@@ -310,7 +310,7 @@ def _build_parser() -> argparse.ArgumentParser:
     mark_zones_parser.add_argument("--out", required=True, type=Path)
     mark_zones_parser.add_argument("--table-id", required=True)
     mark_zones_parser.add_argument(
-        "--chip-zone-shrink-factor", type=float, default=DEFAULT_CHIP_ZONE_SHRINK_FACTOR
+        "--chip-zone-inset-pixels", type=float, default=DEFAULT_CHIP_ZONE_INSET_PIXELS
     )
     mark_zones_parser.set_defaults(func=_cmd_mark_zones)
 
