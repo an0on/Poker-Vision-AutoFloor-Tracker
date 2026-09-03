@@ -41,6 +41,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from pydantic import ValidationError
+
 from poker_vision.calibration.authoring import (
     CALIBRATION_AUTHORING_SCHEMA_VERSION,
     CalibrationAuthoring,
@@ -76,7 +78,6 @@ DEFAULT_CHIP_ZONE_INSET_PIXELS = 10.0
 _RAIL_NORMAL_MIN_DOT = 0.5  # cos(60 degrees)
 
 _MIN_SEATS = 3
-_MIN_POLYGON_POINTS = 3
 # Numerically arbitrary (undistortion is an exact identity when distortion
 # is all-zero, see `undistort.py`) -- kept only for a plausible-looking
 # authoring file; real intrinsics were never measured for this rig.
@@ -147,75 +148,113 @@ def _edge_outward_unit_normal(p1: Point, p2: Point, interior_reference: Point) -
     return candidate
 
 
-def _halfplane_side(point: Point, line_point: Point, normal: Point) -> float:
-    return _dot((point[0] - line_point[0], point[1] - line_point[1]), normal)
+def _line_intersection(point_a: Point, normal_a: Point, point_b: Point, normal_b: Point) -> Point:
+    """Where the two lines (each given as a point on it + its normal) cross.
 
-
-def _halfplane_intersection(a: Point, b: Point, line_point: Point, normal: Point) -> Point:
-    side_a = _halfplane_side(a, line_point, normal)
-    side_b = _halfplane_side(b, line_point, normal)
-    t = side_a / (side_a - side_b)
-    return (a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]))
-
-
-def _clip_polygon_to_halfplane(
-    polygon: list[Point], line_point: Point, normal: Point
-) -> list[Point]:
-    """Sutherland-Hodgman: keep the part of `polygon` on `normal`'s side of
-    the line through `line_point`. `polygon` need not be convex -- clipping
-    against a single half-plane (itself always convex) is exact regardless.
+    Falls back to `point_a` for (near-)parallel lines -- two adjacent edges
+    of a finely-traced curve are frequently near-collinear (consecutive
+    click points a curve's own tangent barely turns between), and both
+    lines coincide almost exactly in that case, so any point on either is
+    an equally good answer; there is no meaningfully "more correct" one.
     """
-    if not polygon:
-        return []
-    output: list[Point] = []
-    n = len(polygon)
-    for i in range(n):
-        current = polygon[i]
-        previous = polygon[i - 1]
-        current_inside = _halfplane_side(current, line_point, normal) >= 0
-        previous_inside = _halfplane_side(previous, line_point, normal) >= 0
-        if current_inside:
-            if not previous_inside:
-                output.append(_halfplane_intersection(previous, current, line_point, normal))
-            output.append(current)
-        elif previous_inside:
-            output.append(_halfplane_intersection(previous, current, line_point, normal))
-    return output
+    det = normal_a[0] * normal_b[1] - normal_a[1] * normal_b[0]
+    if abs(det) < 1e-9:
+        return point_a
+    rhs_a = _dot(point_a, normal_a)
+    rhs_b = _dot(point_b, normal_b)
+    x = (rhs_a * normal_b[1] - rhs_b * normal_a[1]) / det
+    y = (normal_a[0] * rhs_b - normal_b[0] * rhs_a) / det
+    return (x, y)
+
+
+_MITER_LIMIT_FACTOR = 4.0
+
+
+def _offset_vertex(
+    vertex: Point,
+    point_a: Point,
+    normal_a: Point,
+    offset_a: float,
+    point_b: Point,
+    normal_b: Point,
+    offset_b: float,
+) -> Point:
+    """One vertex's new position: the two adjacent (possibly offset) edge
+    lines' intersection, unless that miter point lands unreasonably far
+    away (see `_derive_chip_zone`'s docstring) -- then the bevel fallback,
+    the average of each edge's own straight-perpendicular offset of
+    `vertex`.
+    """
+    miter = _line_intersection(point_a, normal_a, point_b, normal_b)
+    max_offset = max(offset_a, offset_b)
+    if max_offset > 0 and _dist(vertex, miter) > _MITER_LIMIT_FACTOR * max_offset:
+        bevel_a = (vertex[0] - normal_a[0] * offset_a, vertex[1] - normal_a[1] * offset_a)
+        bevel_b = (vertex[0] - normal_b[0] * offset_b, vertex[1] - normal_b[1] * offset_b)
+        return ((bevel_a[0] + bevel_b[0]) / 2, (bevel_a[1] + bevel_b[1]) / 2)
+    return miter
 
 
 def _derive_chip_zone(
     points: list[Point], table_centroid: Point, inset_pixels: float
 ) -> list[Point]:
     """One seat's `chip_zone`: `points` (its `player_area`) with every
-    non-rail edge pulled inward by `inset_pixels`, and the rail edge(s) left
-    untouched (see module docstring / `_RAIL_NORMAL_MIN_DOT`).
+    non-rail edge's line pulled inward by `inset_pixels` and the rail
+    edge(s) left untouched (see module docstring / `_RAIL_NORMAL_MIN_DOT`),
+    each vertex then recomputed as the intersection of its two adjacent
+    (possibly shifted) edge lines -- the standard mitered polygon-offset
+    construction.
+
+    Not a sequential "clip the whole polygon against each shifted edge in
+    turn": a seat's rail or inner boundary is often traced with many short
+    points along the real curve, and repeatedly clipping the *entire*
+    polygon against every one of those many near-parallel shifted lines
+    compounds -- each further clip can cut back into what the previous
+    clip already produced, eroding far more than `inset_pixels` in total
+    (confirmed on the real reference table's click data: some seats lost
+    over 80% of their area to a nominal 10px inset). Recomputing each
+    vertex from only its own two adjacent edges has no such compounding:
+    a vertex between two untouched rail edges lands back exactly on its
+    original position, and a run of many consecutive inset edges traces a
+    properly offset curve through their pairwise intersections instead.
+
+    That per-vertex intersection ("miter join", in stroke-rendering terms)
+    has its own known failure mode at a sharp or reflex corner: real click
+    traces have those too (confirmed on the real reference table -- a
+    seat's two adjacent edges meeting at a tight angle), and the two
+    offset lines there can cross arbitrarily far from the original vertex,
+    the same spike a sharp miter join produces in vector graphics. Past a
+    `_MITER_LIMIT_FACTOR` multiple of the offset itself, `_offset_vertex`
+    falls back to a "bevel" (the average of each edge's own independently
+    offset point) instead of the raw line intersection -- bounded, and
+    exactly what every vector-graphics stroke renderer does for the same
+    reason.
 
     Operates on the polygon's own edges directly rather than moving
     individual vertices toward some reference point: an earlier design
     shrank every vertex toward the seat's centroid uniformly, which eats
     into the rail-facing side just as much as every other side (the exact
     opposite of what a poker player playing this table needs, since chips
-    are stacked right up against the rail) and, separately, isn't reliably
-    "push into the polygon" for a concave/irregular click trace either.
+    are stacked right up against the rail).
     """
     seat_centroid = _polygon_centroid(points)
     outward = _unit((seat_centroid[0] - table_centroid[0], seat_centroid[1] - table_centroid[1]))
 
-    chip_zone = list(points)
     n = len(points)
+    edge_lines: list[tuple[Point, Point, float]] = []
     for i in range(n):
         p1, p2 = points[i], points[(i + 1) % n]
         normal = _edge_outward_unit_normal(p1, p2, seat_centroid)
-        if _dot(normal, outward) > _RAIL_NORMAL_MIN_DOT:
-            continue  # rail edge: zero margin, by design
-        line_point = (p1[0] - normal[0] * inset_pixels, p1[1] - normal[1] * inset_pixels)
-        keep_normal = (-normal[0], -normal[1])
-        chip_zone = _clip_polygon_to_halfplane(chip_zone, line_point, keep_normal)
-        if len(chip_zone) < _MIN_POLYGON_POINTS:
-            raise ValueError(
-                f"chip_zone_inset_pixels={inset_pixels} leaves fewer than "
-                f"{_MIN_POLYGON_POINTS} points once non-rail edges are inset"
-            )
+        offset = 0.0 if _dot(normal, outward) > _RAIL_NORMAL_MIN_DOT else inset_pixels
+        line_point = (p1[0] - normal[0] * offset, p1[1] - normal[1] * offset)
+        edge_lines.append((line_point, normal, offset))
+
+    chip_zone = []
+    for i in range(n):
+        point_a, normal_a, offset_a = edge_lines[i - 1]
+        point_b, normal_b, offset_b = edge_lines[i]
+        chip_zone.append(
+            _offset_vertex(points[i], point_a, normal_a, offset_a, point_b, normal_b, offset_b)
+        )
     return chip_zone
 
 
@@ -332,15 +371,27 @@ def build_authoring_from_marked_zones(
     for key, points in marked.seat_polygons.items():
         try:
             chip_zone_points = _derive_chip_zone(points, table_centroid, chip_zone_inset_pixels)
-        except ValueError as exc:
-            raise ValueError(f"seat '{key}' ({seat_ids[key]}): {exc}") from exc
+            chip_zone = _to_table_polygon(chip_zone_points)
+        except (ValueError, ValidationError) as exc:
+            # The likeliest real-world cause (confirmed against the actual
+            # reference table's click data): two adjacent player_area
+            # points a few pixels apart -- an accidental double-click while
+            # tracing -- are close enough that even a small inset swings
+            # the derived corner past nearby geometry. Re-tracing that
+            # seat without the near-duplicate point is the fix, not a
+            # smaller inset (a globally smaller inset for every other,
+            # cleanly-traced seat isn't the actual problem).
+            raise ValueError(
+                f"seat '{key}' ({seat_ids[key]}): chip_zone_inset_pixels="
+                f"{chip_zone_inset_pixels} produces an invalid chip_zone ({exc}). "
+                "Likely cause: two of this seat's player_area points are only a "
+                "few pixels apart (an accidental double-click) -- re-trace this "
+                "seat without the near-duplicate point."
+            ) from exc
         seats.append(
             CalibrationSeat(
                 seat_id=seat_ids[key],
-                zones=SeatZones(
-                    player_area=_to_table_polygon(points),
-                    chip_zone=_to_table_polygon(chip_zone_points),
-                ),
+                zones=SeatZones(player_area=_to_table_polygon(points), chip_zone=chip_zone),
             )
         )
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from poker_vision.calibration.geometry import polygon_signed_area
@@ -183,3 +185,119 @@ def test_build_authoring_accepts_chip_zone_inset_pixels_of_zero():
     player_points = {(p.x, p.y) for p in seat.zones.player_area.points}
     chip_points = {(p.x, p.y) for p in seat.zones.chip_zone.points}
     assert chip_points == player_points
+
+
+def test_build_authoring_chip_zone_bounds_a_sharp_corner_via_miter_limit():
+    # "spike"'s apex is a ~7-degree needle tip between its two (non-rail)
+    # side edges. A naive per-vertex offset -- intersecting both edges'
+    # own inset lines -- blows up for a sharp angle like this (miter
+    # length = offset / sin(half-angle), here ~10 / sin(3.6 deg) =~ 160px
+    # for a nominal 10px inset): the same failure mode confirmed on the
+    # real reference table, where one seat's apex moved 82px off a 5px
+    # inset before the miter-limit bevel fallback was added. With the
+    # fallback, the apex must stay close to its original position.
+    seats = {
+        "north": _square(0, -500, half=20),
+        "east": _square(500, 0, half=20),
+        "spike": [(-50.0, 600.0), (50.0, 600.0), (0.0, -200.0)],
+    }
+    marked = MarkedZones(
+        seat_polygons=seats,
+        dealer_seat_key="north",
+        inner_oval_points=[(-100, -100), (100, -100), (100, 100), (-100, 100)],
+        board_zone_points=[(3000, -3000), (3020, -3000), (3020, -2980), (3000, -2980)],
+        image_size=(4000, 4000),
+    )
+    authoring = build_authoring_from_marked_zones(
+        marked, table_id="t", chip_zone_inset_pixels=10.0
+    )
+    spike_seat = next(s for s in authoring.seats if len(s.zones.player_area.points) == 3)
+    apex = next(p for p in spike_seat.zones.chip_zone.points if p.y < 0)
+    assert math.hypot(apex.x - 0.0, apex.y - (-200.0)) < 20.0
+
+
+# Real player_area click data from the actual DOPO POKER reference table
+# (calib mark-zones session), reused verbatim for the regression test
+# below -- only the real table's own point layout (and the real
+# table-wide centroid it implies) reproduces the exact failure being
+# guarded against; a small synthetic approximation didn't.
+_REAL_TABLE_SEAT_POLYGONS: dict[str, list[tuple[float, float]]] = {
+    "seat_5": [
+        (1586.88, 662.4), (1788.48, 1036.8), (2350.08, 1028.16), (2540.16, 630.72),
+        (1589.76, 659.52),
+    ],
+    "seat_6": [
+        (2545.92, 639.36), (2352.96, 1025.28), (3084.48, 1008.0), (3340.8, 682.56),
+        (3263.04, 648.0), (3205.44, 630.72), (3127.68, 624.96), (3061.44, 624.96),
+        (2557.44, 633.6),
+    ],
+    "seat_7": [
+        (3335.04, 676.8), (3084.48, 1002.24), (3188.16, 1028.16), (3245.76, 1059.84),
+        (3317.76, 1140.48), (3363.84, 1241.28), (3375.36, 1324.8), (3752.64, 1319.04),
+        (3755.52, 1238.4), (3738.24, 1137.6), (3712.32, 1062.72), (3677.76, 984.96),
+        (3640.32, 924.48), (3591.36, 852.48), (3510.72, 789.12), (3456.0, 740.16),
+        (3392.64, 702.72), (3343.68, 679.68),
+    ],
+    "seat_8": [
+        (3749.76, 1321.92), (3375.36, 1327.68), (3360.96, 1425.6), (3320.64, 1500.48),
+        (3257.28, 1572.48), (3176.64, 1627.2), (3127.68, 1641.6), (3075.84, 1650.24),
+        (3317.76, 1955.52), (3438.72, 1897.92), (3533.76, 1814.4), (3631.68, 1707.84),
+        (3695.04, 1578.24), (3729.6, 1480.32), (3752.64, 1376.64), (3755.52, 1327.68),
+    ],
+    "seat_9": [
+        (3320.64, 1952.64), (3075.84, 1650.24), (2367.36, 1664.64), (2545.92, 2016.0),
+        (3052.8, 2021.76), (3182.4, 1998.72), (3326.4, 1958.4),
+    ],
+    "seat_10": [
+        (2548.8, 2018.88), (2358.72, 1661.76), (1794.24, 1670.4), (1618.56, 2024.64),
+        (2540.16, 2021.76),
+    ],
+    "seat_1": [
+        (1618.56, 2021.76), (1791.36, 1673.28), (1126.08, 1676.16), (910.08, 1972.8),
+        (1013.76, 2013.12), (1114.56, 2021.76), (1618.56, 2024.64),
+    ],
+    "seat_2": [
+        (910.08, 1967.04), (1123.2, 1676.16), (1054.08, 1664.64), (984.96, 1638.72),
+        (927.36, 1595.52), (884.16, 1546.56), (855.36, 1483.2), (835.2, 1422.72),
+        (829.44, 1373.76), (492.48, 1376.64), (501.12, 1494.72), (541.44, 1612.8),
+        (587.52, 1702.08), (650.88, 1785.6), (717.12, 1848.96), (777.6, 1906.56),
+        (904.32, 1975.68),
+    ],
+    "seat_3": [
+        (498.24, 1379.52), (832.32, 1368.0), (838.08, 1296.0), (869.76, 1215.36),
+        (915.84, 1143.36), (959.04, 1105.92), (1025.28, 1065.6), (1100.16, 1054.08),
+        (843.84, 737.28), (748.8, 797.76), (668.16, 875.52), (601.92, 950.4),
+        (552.96, 1033.92), (529.92, 1105.92), (504.0, 1212.48), (492.48, 1310.4),
+        (495.36, 1382.4),
+    ],
+    "seat_4": [
+        (849.6, 745.92), (1100.16, 1051.2), (1785.6, 1039.68), (1586.88, 659.52),
+        (1126.08, 668.16), (1025.28, 682.56), (950.4, 702.72), (887.04, 722.88),
+        (855.36, 743.04),
+    ],
+}
+
+
+def test_build_authoring_rejects_near_duplicate_click_with_actionable_message():
+    # Two of "seat_5"'s player_area points (its own last two, closing the
+    # polygon back to the start) are only ~4px apart, an accidental
+    # double-click while tracing the seat. A default-sized inset (10px)
+    # then swings the derived corner past unrelated, far-away geometry
+    # elsewhere in the same polygon -- a genuine invalid chip_zone, not
+    # something a smaller inset alone would fix (contrast the miter-limit
+    # test above: that one *is* just a sharp corner). The tool must raise
+    # a clear, actionable error naming the seat instead of a bare pydantic
+    # validation traceback. (The real table's own click data has this same
+    # problem in more than one seat -- seat_5's is simply first in
+    # dict/click order, so it's the one that surfaces.)
+    marked = MarkedZones(
+        seat_polygons=_REAL_TABLE_SEAT_POLYGONS,
+        dealer_seat_key="seat_10",
+        inner_oval_points=[(1025.28, 1065.6), (1100.16, 1054.08), (1785.6, 1039.68)],
+        board_zone_points=[
+            (1702.08, 1166.4), (2488.32, 1154.88), (2491.2, 1419.84), (1710.72, 1431.36),
+        ],
+        image_size=(4032, 3024),
+    )
+    with pytest.raises(ValueError, match=r"(?s)seat 'seat_5'.*double-click"):
+        build_authoring_from_marked_zones(marked, table_id="t", chip_zone_inset_pixels=10.0)
