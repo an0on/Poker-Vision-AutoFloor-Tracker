@@ -12,7 +12,10 @@ both fully unit-tested.
 Controls: left-click adds a point; Enter/Space finishes the current seat
 polygon (SEATS step) or the inner-oval trace (INNER_OVAL step);
 Backspace/'u' undoes the last point; 's' saves once the session reaches
-DONE; Esc aborts without writing anything.
+DONE; Esc aborts without writing anything. If 's' is rejected (e.g. a
+seat's own points don't form a valid polygon), the window stays open and
+the error is shown -- click the seat to re-trace it, or press 'o' to
+re-trace the inner oval, instead of restarting the whole session.
 """
 
 from __future__ import annotations
@@ -135,6 +138,8 @@ def _compose_display_frame(
     instructions = _STEP_INSTRUCTIONS[session.step]
     if session.step is Step.SEATS:
         instructions += f" ({len(session.seats)}/10 done)"
+    elif session.step is Step.DONE and save_error is not None:
+        instructions = "Click a seat, or 'o' for the oval, to re-trace it -- Esc to discard"
     cv2.putText(bar, instructions, (8, 20), _FONT, 0.6, _COLOR_TEXT, 1, cv2.LINE_AA)
     bars = [bar]
     if save_error is not None:
@@ -164,7 +169,23 @@ def run_interactive_mark_zones(
     display_scale = min(1.0, _MAX_DISPLAY_DIMENSION / max(width, height))
     display_size = (round(width * display_scale), round(height * display_scale))
 
+    # Set only by a failed 's' (build/REQ-11 validation raised) further
+    # down -- shown as a second bar until the operator reopens the failing
+    # seat/oval, undoes, or tries 's' again. Deliberately does *not* close
+    # the window or discard the session on failure: the window used to
+    # close unconditionally the instant 's' was pressed, before validation
+    # ever ran, so a rejected session silently vanished with only a
+    # terminal print (easy to miss, e.g. behind the now-gone window)
+    # explaining why -- confirmed against a real session where exactly
+    # that happened. `authoring` is only ever read after the loop below
+    # breaks out on a successful save, so it's unbound on any other exit
+    # path (Esc/exception), which is fine -- those paths return before
+    # reaching it.
+    save_error: str | None = None
+    authoring: CalibrationAuthoring
+
     def on_mouse(event: int, x: int, y: int, _flags: int, _userdata: object) -> None:
+        nonlocal save_error
         if event != cv2.EVENT_LBUTTONDOWN:
             return
         # The instruction bar sits above the content (see
@@ -178,7 +199,17 @@ def run_interactive_mark_zones(
         try:
             if session.step is Step.PICK_DEALER:
                 session.pick_dealer_at(point)
-            elif session.step is not Step.DONE:
+            elif session.step is Step.DONE:
+                # Only reachable after a failed 's' (see the loop below):
+                # a successful save breaks out of the loop and closes the
+                # window in the same iteration, so there is no frame in
+                # which DONE is showing without an error to click through.
+                if save_error is not None:
+                    seat_key = session.seat_at(point)
+                    if seat_key is not None:
+                        session.reopen_seat(seat_key)
+                        save_error = None
+            else:
                 session.add_point(point)
         except ValueError as exc:
             print(f"mark-zones: {exc}", file=sys.stderr)
@@ -188,20 +219,6 @@ def run_interactive_mark_zones(
     # exactly what `on_mouse` above assumes for the whole session.
     cv2.namedWindow(_WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
     cv2.setMouseCallback(_WINDOW_NAME, on_mouse)
-
-    # Set only by a failed 's' (build/REQ-11 validation raised) below --
-    # shown as a second bar until the operator changes something (undo) or
-    # tries 's' again. Deliberately does *not* close the window or discard
-    # the session on failure: the window used to close unconditionally the
-    # instant 's' was pressed, before validation ever ran, so a rejected
-    # session silently vanished with only a terminal print (easy to miss,
-    # e.g. behind the now-gone window) explaining why -- confirmed against
-    # a real session where exactly that happened. `authoring` is only ever
-    # read after the loop below breaks out on a successful save, so it's
-    # unbound on any other exit path (Esc/exception), which is fine --
-    # those paths return before reaching it.
-    save_error: str | None = None
-    authoring: CalibrationAuthoring
 
     try:
         while True:
@@ -226,6 +243,9 @@ def run_interactive_mark_zones(
             if key in (_KEY_BACKSPACE, ord("u")):
                 session.undo()
                 save_error = None  # the operator is already trying to fix something
+            if key == ord("o") and session.step is Step.DONE and save_error is not None:
+                session.reopen_inner_oval()
+                save_error = None
             if key == ord("s") and session.step is Step.DONE:
                 try:
                     marked = session.build()

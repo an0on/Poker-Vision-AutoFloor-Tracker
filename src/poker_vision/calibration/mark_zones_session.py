@@ -142,16 +142,22 @@ class ClickSession:
         if len(self.seats) == _SEAT_COUNT:
             self.step = Step.PICK_DEALER
 
+    def seat_at(self, point: Point) -> str | None:
+        """The key of whichever marked seat contains `point`, or `None`."""
+        for key, polygon in self.seats.items():
+            if _point_in_polygon(point, polygon):
+                return key
+        return None
+
     def pick_dealer_at(self, point: Point) -> None:
         """Mark whichever already-committed seat contains `point` as the dealer seat."""
         if self.step is not Step.PICK_DEALER:
             raise ValueError(f"pick_dealer_at is only valid in step PICK_DEALER, not {self.step}")
-        for key, polygon in self.seats.items():
-            if _point_in_polygon(point, polygon):
-                self.dealer_seat_key = key
-                self.step = Step.INNER_OVAL
-                return
-        raise ValueError(f"{point} is not inside any marked seat")
+        key = self.seat_at(point)
+        if key is None:
+            raise ValueError(f"{point} is not inside any marked seat")
+        self.dealer_seat_key = key
+        self.step = Step.INNER_OVAL
 
     def finish_inner_oval(self) -> None:
         """Commit the freehand inner-oval trace and move on (INNER_OVAL step only)."""
@@ -163,6 +169,46 @@ class ClickSession:
                 f"got {len(self.inner_oval_points)}"
             )
         self.step = Step.BOARD_ZONE
+
+    def reopen_seat(self, seat_key: str) -> None:
+        """Move an already-committed seat's points back into the
+        in-progress buffer for re-clicking (DONE step only) -- the
+        recovery path for a save-time REQ-11 rejection of that seat's
+        geometry (see `mark_zones.py`'s error messages, which name the
+        seat to re-trace). Without this, that "re-trace this seat"
+        guidance couldn't actually be acted on short of aborting and
+        re-clicking all 10 seats from scratch.
+
+        Also discards the dealer pick, inner-oval trace and board_zone
+        points: `pick_dealer_at` needs an intact set of seats to search
+        (the seat being edited is briefly gone from `self.seats`), and if
+        the reopened seat *was* the dealer seat, `dealer_seat_key` would
+        otherwise point at a seat that no longer exists -- simpler and
+        safer to have every downstream step redone than to work out case
+        by case which of them are still consistent.
+        """
+        if self.step is not Step.DONE:
+            raise ValueError(f"reopen_seat is only valid in step DONE, not {self.step}")
+        if seat_key not in self.seats:
+            raise ValueError(f"'{seat_key}' is not a marked seat")
+        self._current_polygon = self.seats.pop(seat_key)
+        self.dealer_seat_key = None
+        self.inner_oval_points = []
+        self.board_zone_points = []
+        self.step = Step.SEATS
+
+    def reopen_inner_oval(self) -> None:
+        """Return to INNER_OVAL for a fresh trace (DONE step only), the
+        `reopen_seat` recovery path's counterpart for a save-time REQ-11
+        rejection of `dealer_area` itself rather than a seat. Also
+        discards board_zone's points, which were only ever valid relative
+        to the trace being replaced.
+        """
+        if self.step is not Step.DONE:
+            raise ValueError(f"reopen_inner_oval is only valid in step DONE, not {self.step}")
+        self.inner_oval_points = []
+        self.board_zone_points = []
+        self.step = Step.INNER_OVAL
 
     def build(self) -> MarkedZones:
         """Assemble the completed session into a `MarkedZones` (REQ-10a).

@@ -217,3 +217,95 @@ def test_build_before_done_rejected():
     session = ClickSession(image_size=(1000, 1000))
     with pytest.raises(ValueError, match="not complete yet"):
         session.build()
+
+
+# --- DONE step: reopening after a failed save -----------------------------------
+#
+# Codex review finding (P2): a save-time REQ-11 rejection of a seat or the
+# inner-oval trace (see mark_zones.py's error messages, which name the
+# seat to re-trace) previously had no way to actually act on that guidance
+# short of aborting and re-clicking the entire 10-seat session from
+# scratch -- undo() only ever reaches back into BOARD_ZONE from DONE.
+
+
+def _session_at_done() -> ClickSession:
+    session = _session_at_board_zone()
+    for point in [(-10, -10), (10, -10), (10, 10), (-10, 10)]:
+        session.add_point(point)
+    assert session.step is Step.DONE
+    return session
+
+
+def test_seat_at_point_inside_a_seat_returns_its_key():
+    session = _fresh_session_with_all_seats()
+    first_key, first_polygon = next(iter(session.seats.items()))
+    cx = sum(p[0] for p in first_polygon) / 4
+    cy = sum(p[1] for p in first_polygon) / 4
+    assert session.seat_at((cx, cy)) == first_key
+
+
+def test_seat_at_point_outside_every_seat_returns_none():
+    session = _fresh_session_with_all_seats()
+    assert session.seat_at((0, 0)) is None  # center of the ring, inside no wedge
+
+
+def test_reopen_seat_moves_its_points_into_the_current_polygon():
+    session = _session_at_done()
+    key, points = next(iter(session.seats.items()))
+    session.reopen_seat(key)
+    assert session.step is Step.SEATS
+    assert session.current_polygon == points
+    assert key not in session.seats
+    assert len(session.seats) == 9
+
+
+def test_reopen_seat_discards_dealer_pick_oval_and_board_zone():
+    session = _session_at_done()
+    key = next(iter(session.seats))
+    session.reopen_seat(key)
+    assert session.dealer_seat_key is None
+    assert session.inner_oval_points == []
+    assert session.board_zone_points == []
+
+
+def test_reopen_seat_of_unknown_key_rejected():
+    session = _session_at_done()
+    with pytest.raises(ValueError, match="not a marked seat"):
+        session.reopen_seat("does_not_exist")
+
+
+def test_reopen_seat_wrong_step_rejected():
+    session = ClickSession(image_size=(1000, 1000))
+    with pytest.raises(ValueError, match="only valid in step DONE"):
+        session.reopen_seat("click_1")
+
+
+def test_reopen_seat_can_be_re_finished_and_reach_done_again():
+    session = _session_at_done()
+    key, points = next(iter(session.seats.items()))
+    session.reopen_seat(key)
+    session.finish_polygon()  # re-click nothing changed, just re-commit as-is
+    assert session.step is Step.PICK_DEALER
+    assert len(session.seats) == 10
+    assert points in session.seats.values()
+
+
+def test_reopen_inner_oval_returns_to_inner_oval_step():
+    session = _session_at_done()
+    session.reopen_inner_oval()
+    assert session.step is Step.INNER_OVAL
+    assert session.inner_oval_points == []
+
+
+def test_reopen_inner_oval_discards_board_zone_but_keeps_dealer_pick():
+    session = _session_at_done()
+    dealer_seat_key = session.dealer_seat_key
+    session.reopen_inner_oval()
+    assert session.board_zone_points == []
+    assert session.dealer_seat_key == dealer_seat_key
+
+
+def test_reopen_inner_oval_wrong_step_rejected():
+    session = ClickSession(image_size=(1000, 1000))
+    with pytest.raises(ValueError, match="only valid in step DONE"):
+        session.reopen_inner_oval()
