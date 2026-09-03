@@ -314,16 +314,39 @@ def _center_strip_mask(
     return mask
 
 
-def _mask_bbox_extent(mask: np.ndarray) -> tuple[float, float]:
-    """(width, height) of the bounding box of `mask`'s nonzero pixels.
+def _mask_bbox_extent(mask: np.ndarray, reference: CalibrationRuntime) -> tuple[float, float]:
+    """(width, height) of the bounding box of `mask`'s nonzero pixels, in
+    *undistorted* pixel space.
 
     The reference scale `_check_inlier_spread` measures RANSAC inliers
     against -- computed once from the actual mask rather than re-deriving
     the zone geometry a second time, so it can never drift out of sync
     with what `_match_keypoints` actually restricted the search to.
+    Undistorted, not raw, space: `_solve_live_to_reference_homography`'s
+    inlier points are undistorted (`reference.homography.forward` is only
+    defined there -- see `homography.py`), but `mask` itself is rasterized
+    in raw reference-photo pixel coordinates, so comparing its extent
+    directly against those points would silently mix the two coordinate
+    systems for any calibration with nonzero lens distortion (every one
+    authored so far happens to use zero distortion, which makes undistort
+    an identity operation and hid this -- but the schema explicitly
+    supports nonzero values). Undistorting just the raw bounding box's
+    four corners, rather than every nonzero mask pixel, is an
+    approximation (undistortion is nonlinear, so it isn't exactly the
+    bounding box of the undistorted region) -- adequate here since this
+    feeds a coarse anti-clustering heuristic, not a precision measurement.
     """
     ys, xs = np.nonzero(mask)
-    return float(xs.max() - xs.min()), float(ys.max() - ys.min())
+    x0, x1 = float(xs.min()), float(xs.max())
+    y0, y1 = float(ys.min()), float(ys.max())
+    corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+    undistorted_corners = undistort_points(corners, reference.camera, reference.distortion)
+    undistorted_xs = [x for x, _ in undistorted_corners]
+    undistorted_ys = [y for _, y in undistorted_corners]
+    return (
+        max(undistorted_xs) - min(undistorted_xs),
+        max(undistorted_ys) - min(undistorted_ys),
+    )
 
 
 def _check_inlier_spread(
@@ -542,7 +565,7 @@ def learn_table_calibration(
         reference_gray.shape[0],
         config.center_strip_margin_ratio,
     )
-    mask_extent = _mask_bbox_extent(reference_mask)
+    mask_extent = _mask_bbox_extent(reference_mask, reference)
 
     live_points_raw, reference_points_raw = _match_keypoints(
         reference_gray, live_gray, reference_mask, config

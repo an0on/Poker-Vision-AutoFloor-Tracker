@@ -22,6 +22,7 @@ from poker_vision.calibration.learn_table import (
     _center_strip_mask,
     _check_inlier_spread,
     _filter_reliable_matches,
+    _mask_bbox_extent,
     learn_table_calibration,
 )
 from poker_vision.calibration.runtime import CalibrationRuntime
@@ -437,6 +438,39 @@ def test_learn_table_config_rejects_invalid_aspect_ratio_tolerance(bad_tolerance
 def test_learn_table_config_rejects_invalid_min_inlier_spread_ratio(bad_ratio):
     with pytest.raises(LearnTableError, match="min_inlier_spread_ratio"):
         LearnTableConfig(min_inlier_spread_ratio=bad_ratio)
+
+
+# --- _mask_bbox_extent: measured in undistorted space -----------------------
+
+
+def test_mask_bbox_extent_measures_in_undistorted_space():
+    # `_check_inlier_spread` compares this extent against inlier points
+    # that are always undistorted (`_solve_live_to_reference_homography`
+    # undistorts before calling `cv2.findHomography` -- `homography.
+    # forward` is only defined there, see homography.py). With nonzero
+    # distortion, the mask's own raw-pixel extent and its undistorted
+    # extent must differ -- comparing the wrong one would silently mix
+    # coordinate systems (every calibration authored so far happens to use
+    # zero distortion, which hides this).
+    distorted_reference = _reference_runtime().model_copy(
+        update={"distortion": DistortionCoefficients(k1=-0.3, k2=0.05, p1=0.0, p2=0.0, k3=0.0)}
+    )
+    mask = np.zeros((HEIGHT, WIDTH), dtype=np.uint8)
+    mask[300:700, 200:1000] = 255
+    raw_extent = (799.0, 399.0)  # index max - min for slices [200:1000)/[300:700)
+
+    undistorted_extent = _mask_bbox_extent(mask, distorted_reference)
+
+    assert undistorted_extent[0] != pytest.approx(raw_extent[0])
+    assert undistorted_extent[1] != pytest.approx(raw_extent[1])
+
+
+def test_mask_bbox_extent_matches_raw_pixels_when_undistorted():
+    # Zero distortion (this project's convention so far) makes undistort
+    # an identity operation, so raw and undistorted extent must coincide.
+    mask = np.zeros((HEIGHT, WIDTH), dtype=np.uint8)
+    mask[300:700, 200:1000] = 255
+    assert _mask_bbox_extent(mask, _reference_runtime()) == pytest.approx((799.0, 399.0))
 
 
 # --- _check_inlier_spread: reject a spatially clustered inlier set ----------
