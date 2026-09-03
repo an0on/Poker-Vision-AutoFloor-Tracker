@@ -44,8 +44,7 @@ import numpy as np
 from poker_vision.calibration.geometry import Matrix3x3, TablePoint, matrix3x3_multiply
 from poker_vision.calibration.homography import HomographyMatrix
 from poker_vision.calibration.runtime import CalibrationRuntime
-from poker_vision.calibration.undistort import undistort_points
-from poker_vision.detection.geometry import apply_inverse_homography_to_point
+from poker_vision.calibration.undistort import distort_points, undistort_points
 
 DEFAULT_MIN_MATCH_COUNT = 15
 DEFAULT_MIN_INLIER_RATIO = 0.5
@@ -128,6 +127,37 @@ def _check_resolution(
         )
 
 
+def _apply_homography_matrix(matrix: Matrix3x3, x: float, y: float) -> tuple[float, float]:
+    """Apply a 3x3 homography matrix to one point.
+
+    Deliberately local to `calibration/`, not a call into `detection/
+    geometry.py`'s equivalent: `detection/` already imports `calibration/`
+    (e.g. `undistort.py`, `homography.py`), and that dependency only ever
+    runs the one way (see `undistort.py`'s module docstring) -- importing
+    back from here would reverse it.
+    """
+    points = np.array([[[x, y]]], dtype=np.float64)
+    transformed = cv2.perspectiveTransform(points, np.array(matrix, dtype=np.float64))
+    return float(transformed[0][0][0]), float(transformed[0][0][1])
+
+
+def _table_point_to_raw_reference_pixel(
+    point: TablePoint, reference: CalibrationRuntime
+) -> tuple[float, float]:
+    """Table-plane point -> raw (distorted) reference-photo pixel: the exact
+    inverse of how a detected pixel is turned into a table point elsewhere
+    in the pipeline (undistort, then homography-forward) -- homography-
+    inverse first here, then redistort.
+    """
+    undistorted_x, undistorted_y = _apply_homography_matrix(
+        reference.homography.inverse, point.x, point.y
+    )
+    ((raw_x, raw_y),) = distort_points(
+        [(undistorted_x, undistorted_y)], reference.camera, reference.distortion
+    )
+    return raw_x, raw_y
+
+
 def _center_strip_bbox(
     reference: CalibrationRuntime, image_width: int, image_height: int, margin_ratio: float
 ) -> tuple[int, int, int, int]:
@@ -137,26 +167,21 @@ def _center_strip_bbox(
     between two physical tables of the same design even when the felt
     colour differs.
 
-    `apply_inverse_homography_to_point` maps each zone's table-plane
+    `_table_point_to_raw_reference_pixel` maps each zone's table-plane
     points back through the reference's already-solved homography into
-    raw (distorted) reference pixel space -- the exact inverse of how
-    `detection/geometry.py` turns a raw detection into a table point, so
-    both directions of the reference calibration agree by construction.
-    Expanded by `margin_ratio` (of each side's own extent), since these
-    zones were authored a little inside the actual printed lines, not
-    exactly on them.
+    raw (distorted) reference pixel space -- the exact inverse of how a
+    raw detection is turned into a table point, so both directions of the
+    reference calibration agree by construction. Expanded by
+    `margin_ratio` (of each side's own extent), since these zones were
+    authored a little inside the actual printed lines, not exactly on
+    them.
     """
     zone_points: list[TablePoint] = list(reference.zones.board_zone.points) + list(
         reference.zones.dealer_area.points
     )
-    pixels = [
-        apply_inverse_homography_to_point(
-            point, reference.homography, reference.camera, reference.distortion
-        )
-        for point in zone_points
-    ]
-    xs = [p.x for p in pixels]
-    ys = [p.y for p in pixels]
+    pixels = [_table_point_to_raw_reference_pixel(point, reference) for point in zone_points]
+    xs = [p[0] for p in pixels]
+    ys = [p[1] for p in pixels]
     min_x, max_x = min(xs), max(xs)
     min_y, max_y = min(ys), max(ys)
     margin_x = (max_x - min_x) * margin_ratio
