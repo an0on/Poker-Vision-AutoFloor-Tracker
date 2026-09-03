@@ -12,7 +12,7 @@ Pipeline (REQ-10b):
 1. ORB feature matching between the reference photo and the live photo,
    restricted on the reference side to its visually design-stable center
    strip -- the printed card-area outline, inner-oval contour and any
-   table branding (`_center_strip_bbox`). Not the felt itself, which is the
+   table branding (`_center_strip_mask`). Not the felt itself, which is the
    one thing that legitimately varies between two physical tables of the
    same design and would otherwise dominate (and mislead) matching.
 2. RANSAC-homography over the matches, in *undistorted* pixel space (to
@@ -78,7 +78,12 @@ from poker_vision.calibration.undistort import distort_points, undistort_points
 DEFAULT_MIN_MATCH_COUNT = 15
 DEFAULT_MIN_INLIER_RATIO = 0.5
 DEFAULT_RANSAC_REPROJ_THRESHOLD_PIXELS = 5.0
-DEFAULT_CENTER_STRIP_MARGIN_RATIO = 0.15
+# Fraction of the photo's own width -- a fixed, tight band width around
+# `dealer_area`'s boundary curve regardless of how large that zone itself
+# is, wide enough to absorb authoring imprecision (a hand-clicked polygon
+# not landing exactly on the printed line) but not wide enough to reach
+# content sitting well inside the oval (see `_center_strip_mask`).
+DEFAULT_CENTER_STRIP_MARGIN_RATIO = 0.02
 
 # Relative tolerance on width/height ratio when comparing a photo's aspect
 # ratio against the reference calibration's `inference_resolution`. A photo
@@ -229,50 +234,58 @@ def _table_point_to_raw_reference_pixel(
     return raw_x, raw_y
 
 
-def _center_strip_bbox(
+def _polygon_to_reference_pixels(
+    polygon_points: list[TablePoint], reference: CalibrationRuntime
+) -> np.ndarray:
+    pixels = [_table_point_to_raw_reference_pixel(point, reference) for point in polygon_points]
+    return np.array([[round(x), round(y)] for x, y in pixels], dtype=np.int32)
+
+
+def _center_strip_mask(
     reference: CalibrationRuntime, image_width: int, image_height: int, margin_ratio: float
-) -> tuple[int, int, int, int]:
-    """Bounding box, in the reference photo's raw pixel space, of
-    `board_zone` and `dealer_area` (REQ-10b step 1): the printed card
-    outline and inner-oval/branding region that stays visually consistent
-    between two physical tables of the same design even when the felt
-    colour differs.
+) -> np.ndarray:
+    """Mask, in the reference photo's raw pixel space, of the table's
+    visually design-stable "center strip" (REQ-10b step 1): `board_zone`'s
+    filled area (the card-field outline and any text right next to it,
+    small and always relevant) plus a band around `dealer_area`'s boundary
+    *curve* only -- not its full filled interior.
 
-    `_table_point_to_raw_reference_pixel` maps each zone's table-plane
-    points back through the reference's already-solved homography into
-    raw (distorted) reference pixel space -- the exact inverse of how a
-    raw detection is turned into a table point, so both directions of the
-    reference calibration agree by construction. Expanded by
-    `margin_ratio` (of each side's own extent), since these zones were
-    authored a little inside the actual printed lines, not exactly on
-    them.
+    That distinction matters: a real second physical table (verified,
+    not hypothetical) can carry its own extra branding -- e.g. club logos
+    -- printed well inside the oval, away from its boundary, that simply
+    doesn't exist on the reference table at all. Matching against the
+    whole `dealer_area` interior pulled in that extra content and produced
+    spurious matches (the reference's plain print resembling *something*
+    in the unrelated logo, purely by descriptor coincidence) that fit a
+    homography locally but extrapolated to a badly wrong result far from
+    the match cluster. Restricting to the boundary curve mirrors the
+    physical reality instead: the printed oval *outline* is part of the
+    shared base design (REQ-10b's premise), the felt inside it is not.
+
+    `margin_ratio` is a fraction of `image_width` (not of the zone's own,
+    much larger, extent, as an earlier version had it) -- keeping the
+    boundary band a fixed, tight width regardless of how large the zone
+    itself is, wide enough to cover the authoring imprecision inherent in
+    a hand-clicked polygon not landing exactly on the printed line, not
+    wide enough to reach a logo sitting well inside the oval.
     """
-    zone_points: list[TablePoint] = list(reference.zones.board_zone.points) + list(
-        reference.zones.dealer_area.points
-    )
-    pixels = [_table_point_to_raw_reference_pixel(point, reference) for point in zone_points]
-    xs = [p[0] for p in pixels]
-    ys = [p[1] for p in pixels]
-    min_x, max_x = min(xs), max(xs)
-    min_y, max_y = min(ys), max(ys)
-    margin_x = (max_x - min_x) * margin_ratio
-    margin_y = (max_y - min_y) * margin_ratio
-    x0 = max(0, int(min_x - margin_x))
-    y0 = max(0, int(min_y - margin_y))
-    x1 = min(image_width, int(max_x + margin_x) + 1)
-    y1 = min(image_height, int(max_y + margin_y) + 1)
-    if x1 <= x0 or y1 <= y0:
+    board_pixels = _polygon_to_reference_pixels(reference.zones.board_zone.points, reference)
+    dealer_pixels = _polygon_to_reference_pixels(reference.zones.dealer_area.points, reference)
+
+    mask = np.zeros((image_height, image_width), dtype=np.uint8)
+    cv2.fillPoly(mask, [board_pixels], 255)
+    cv2.polylines(mask, [dealer_pixels], isClosed=True, color=255, thickness=1)
+
+    margin_pixels = max(1, round(margin_ratio * image_width))
+    kernel_size = 2 * margin_pixels + 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    mask = cv2.dilate(mask, kernel)
+
+    if not mask.any():
         raise LearnTableError(
-            "center-strip bounding box (board_zone + dealer_area) is degenerate "
-            "or falls outside the reference photo"
+            "center-strip mask (board_zone + dealer_area boundary) is empty or falls "
+            "entirely outside the reference photo"
         )
-    return x0, y0, x1, y1
-
-
-def _center_strip_mask(shape: tuple[int, int], bbox: tuple[int, int, int, int]) -> np.ndarray:
-    mask = np.zeros(shape, dtype=np.uint8)
-    x0, y0, x1, y1 = bbox
-    mask[y0:y1, x0:x1] = 255
     return mask
 
 
@@ -420,7 +433,7 @@ def learn_table_calibration(
     `reference` must already be a compiled `CalibrationRuntime` (the output
     of `calib compile` on the REQ-10a-authored reference calibration), and
     `reference_image_path` the same photo that reference was authored
-    against -- required to locate the center strip (`_center_strip_bbox`)
+    against -- required to locate the center strip (`_center_strip_mask`)
     in the reference's own pixel space.
 
     Raises `LearnTableError` (a `ValueError`) if either image can't be
@@ -450,13 +463,12 @@ def learn_table_calibration(
         "live image",
     )
 
-    bbox = _center_strip_bbox(
+    reference_mask = _center_strip_mask(
         reference,
         reference_gray.shape[1],
         reference_gray.shape[0],
         config.center_strip_margin_ratio,
     )
-    reference_mask = _center_strip_mask(reference_gray.shape, bbox)
 
     live_points_raw, reference_points_raw = _match_keypoints(
         reference_gray, live_gray, reference_mask, config

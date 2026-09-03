@@ -16,8 +16,10 @@ from poker_vision.calibration.geometry import (
 )
 from poker_vision.calibration.homography import HomographyMatrix
 from poker_vision.calibration.learn_table import (
+    DEFAULT_CENTER_STRIP_MARGIN_RATIO,
     LearnTableConfig,
     LearnTableError,
+    _center_strip_mask,
     _filter_reliable_matches,
     learn_table_calibration,
 )
@@ -325,6 +327,39 @@ def test_learn_table_rejects_unrelated_live_photo_low_inlier_ratio(tmp_path, ref
             based_on="test",
             config=LearnTableConfig(min_match_count=4),
         )
+
+
+# --- _center_strip_mask: boundary-only, not the whole interior --------------
+
+
+def _default_mask():
+    margin_ratio = DEFAULT_CENTER_STRIP_MARGIN_RATIO
+    return _center_strip_mask(_reference_runtime(), WIDTH, HEIGHT, margin_ratio)
+
+
+def test_center_strip_mask_excludes_dealer_area_interior():
+    # A real second physical table (verified, not hypothetical -- see this
+    # module's own docstring) can carry extra branding printed well inside
+    # `dealer_area`'s oval, away from its boundary, that doesn't exist on
+    # the reference at all. (400, 450) sits deep inside _DEALER_AREA
+    # (300-900 x, 200-700 y) but far from any of its edges and outside
+    # _BOARD_ZONE (550-650 x, 400-500 y) -- exactly where such branding
+    # would land, and exactly what must NOT be searched.
+    assert _default_mask()[450, 400] == 0
+
+
+def test_center_strip_mask_includes_board_zone_interior():
+    assert _default_mask()[450, 600] == 255
+
+
+def test_center_strip_mask_includes_dealer_area_boundary_band():
+    # A point right on _DEALER_AREA's left edge (x=300) must be covered by
+    # the boundary band, not just the exact polygon edge pixel.
+    assert _default_mask()[450, 300] == 255
+
+
+def test_center_strip_mask_excludes_far_outside_everything():
+    assert _default_mask()[50, 50] == 0
 
 
 # --- _filter_reliable_matches: one-to-one deduplication ----------------------
