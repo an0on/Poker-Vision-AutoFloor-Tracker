@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from poker_vision.calibration.geometry import TablePoint, TablePolygon, polygon_signed_area
+from poker_vision.calibration.geometry import polygon_signed_area
 from poker_vision.calibration.mark_zones import (
     MarkedZones,
     build_authoring_from_marked_zones,
-    infer_inner_boundary_polygon,
     number_seats_clockwise,
 )
 
@@ -73,51 +72,13 @@ def test_number_seats_clockwise_independent_of_dict_order():
     )
 
 
-# --- infer_inner_boundary_polygon --------------------------------------------
-
-
-def test_infer_inner_boundary_polygon_picks_each_seats_two_closest_corners():
-    # COMPASS_SEATS (half=1.0, centered at +-10 on each axis) has a table
-    # centroid at (0, 0); for each square, the two corners on the
-    # centroid-facing edge are consistently ~9.05 units out, the other two
-    # ~11.05 -- the closest pair must be exactly the near edge, not a mix.
-    inner = infer_inner_boundary_polygon(COMPASS_SEATS)
-    assert set(inner) == {
-        (1.0, -9.0), (-1.0, -9.0),  # north's inner edge
-        (9.0, -1.0), (9.0, 1.0),  # east's inner edge
-        (-1.0, 9.0), (1.0, 9.0),  # south's inner edge
-        (-9.0, -1.0), (-9.0, 1.0),  # west's inner edge
-    }
-
-
-def test_infer_inner_boundary_polygon_is_simple_and_nondegenerate():
-    # Reuses TablePolygon's own REQ-11 validator instead of reimplementing
-    # simple/non-degenerate checks here: angle-sorting points around one
-    # shared centroid always yields a simple (star-shaped) polygon, but this
-    # confirms it for real, not just by construction argument.
-    inner = infer_inner_boundary_polygon(COMPASS_SEATS)
-    TablePolygon(points=[TablePoint(x=x, y=y) for x, y in inner])
-
-
-def test_infer_inner_boundary_polygon_independent_of_dict_order():
-    scrambled = {
-        "west": COMPASS_SEATS["west"],
-        "north": COMPASS_SEATS["north"],
-        "east": COMPASS_SEATS["east"],
-        "south": COMPASS_SEATS["south"],
-    }
-    assert set(infer_inner_boundary_polygon(scrambled)) == set(
-        infer_inner_boundary_polygon(COMPASS_SEATS)
-    )
-
-
 # --- build_authoring_from_marked_zones --------------------------------------
 
 
-def _small_marked_zones() -> MarkedZones:
+def _small_marked_zones(inner_oval_points: list[tuple[float, float]] | None = None) -> MarkedZones:
     # A minimal, plausible 4-seat "table": seats far enough apart and small
-    # enough that a 50%-toward-centroid chip_zone can never collide with a
-    # neighbor's, and the board_zone sits well clear of all four.
+    # enough that even a generous inset can never collide with a neighbor's
+    # chip_zone, and the board_zone/inner_oval sit well clear of all four.
     seats = {
         "north": _square(0, -100, half=20),
         "east": _square(100, 0, half=20),
@@ -125,9 +86,12 @@ def _small_marked_zones() -> MarkedZones:
         "west": _square(-100, 0, half=20),
     }
     board_zone = [(-10, -10), (10, -10), (10, 10), (-10, 10)]
+    if inner_oval_points is None:
+        inner_oval_points = [(-50, -50), (50, -50), (50, 50), (-50, 50)]
     return MarkedZones(
         seat_polygons=seats,
         dealer_seat_key="north",
+        inner_oval_points=inner_oval_points,
         board_zone_points=board_zone,
         image_size=(2000, 2000),
     )
@@ -150,27 +114,39 @@ def test_build_authoring_card_dealer_seat_id_is_the_marked_seat():
     assert polygon_signed_area(north_seat.zones.player_area.points) != 0
 
 
-def test_build_authoring_chip_zone_shrink_factor_is_configurable():
+def test_build_authoring_dealer_area_is_the_clicked_inner_oval_trace():
+    inner_oval = [(-50, -50), (50, -50), (50, 50), (-50, 50)]
+    authoring = build_authoring_from_marked_zones(
+        _small_marked_zones(inner_oval), table_id="t"
+    )
+    assert [(p.x, p.y) for p in authoring.zones.dealer_area.points] == inner_oval
+
+
+def test_build_authoring_chip_zone_inset_pixels_is_configurable():
     default = build_authoring_from_marked_zones(_small_marked_zones(), table_id="t")
-    shrunk_more = build_authoring_from_marked_zones(
-        _small_marked_zones(), table_id="t", chip_zone_shrink_factor=0.1
+    inset_more = build_authoring_from_marked_zones(
+        _small_marked_zones(), table_id="t", chip_zone_inset_pixels=15.0
     )
 
     def chip_zone_area(authoring, seat_id):
         seat = next(s for s in authoring.seats if s.seat_id == seat_id)
         return abs(polygon_signed_area(seat.zones.chip_zone.points))
 
-    assert chip_zone_area(shrunk_more, "seat_1") < chip_zone_area(default, "seat_1")
+    assert chip_zone_area(inset_more, "seat_1") < chip_zone_area(default, "seat_1")
 
 
-def test_build_authoring_dealer_area_is_derived_from_seat_inner_corners():
-    authoring = build_authoring_from_marked_zones(_small_marked_zones(), table_id="t")
-    # infer_inner_boundary_polygon picks each seat's 2 corners closest to
-    # the table centroid (0, 0) -- for these seats (half=20, centers at
-    # +-100), that's consistently the corner pair 80 units out, never the
-    # 120-units-out outer pair.
-    for point in authoring.zones.dealer_area.points:
-        assert max(abs(point.x), abs(point.y)) == pytest.approx(80.0)
+def test_build_authoring_chip_zone_stays_flush_with_rail_edge():
+    # "north"'s rail edge is its y=-120 top edge (facing away from the table
+    # centroid at (0, 0)) -- the inset must never pull chip_zone away from
+    # it (zero margin toward the rail, since players stack chips right up
+    # against it); only the side/inner edges get inset.
+    authoring = build_authoring_from_marked_zones(
+        _small_marked_zones(), table_id="t", chip_zone_inset_pixels=5.0
+    )
+    north_seat = next(s for s in authoring.seats if s.seat_id == "seat_4")
+    chip_min_y = min(p.y for p in north_seat.zones.chip_zone.points)
+    player_min_y = min(p.y for p in north_seat.zones.player_area.points)
+    assert chip_min_y == pytest.approx(player_min_y)
 
 
 def test_build_authoring_is_deterministic():
@@ -190,23 +166,20 @@ def test_build_authoring_homography_is_identity_from_image_corners():
         assert correspondence.image_point.y == correspondence.table_point.y
 
 
-@pytest.mark.parametrize("bad_factor", [0.0, -0.5, 1.5])
-def test_build_authoring_rejects_out_of_range_chip_zone_shrink_factor(bad_factor):
-    with pytest.raises(ValueError, match="chip_zone_shrink_factor"):
+def test_build_authoring_rejects_negative_chip_zone_inset_pixels():
+    with pytest.raises(ValueError, match="chip_zone_inset_pixels"):
         build_authoring_from_marked_zones(
-            _small_marked_zones(), table_id="t", chip_zone_shrink_factor=bad_factor
+            _small_marked_zones(), table_id="t", chip_zone_inset_pixels=-1.0
         )
 
 
-def test_build_authoring_accepts_shrink_factor_of_exactly_one():
+def test_build_authoring_accepts_chip_zone_inset_pixels_of_zero():
     # chip_zone == player_area is unusual but valid (REQ-11 allows touching
-    # boundaries) -- 1.0 is the upper edge of the accepted range, not past it.
+    # boundaries) -- 0 is the lower edge of the accepted range, not past it.
     authoring = build_authoring_from_marked_zones(
-        _small_marked_zones(), table_id="t", chip_zone_shrink_factor=1.0
+        _small_marked_zones(), table_id="t", chip_zone_inset_pixels=0.0
     )
-    seat = authoring.seats[0]
-    for chip_point, player_point in zip(
-        seat.zones.chip_zone.points, seat.zones.player_area.points, strict=True
-    ):
-        assert chip_point.x == pytest.approx(player_point.x)
-        assert chip_point.y == pytest.approx(player_point.y)
+    seat = next(s for s in authoring.seats if s.seat_id == "seat_1")
+    player_points = {(p.x, p.y) for p in seat.zones.player_area.points}
+    chip_points = {(p.x, p.y) for p in seat.zones.chip_zone.points}
+    assert chip_points == player_points

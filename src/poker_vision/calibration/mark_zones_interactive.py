@@ -10,8 +10,9 @@ server loop) has no direct test coverage either -- the logic that
 both fully unit-tested.
 
 Controls: left-click adds a point; Enter/Space finishes the current seat
-polygon (SEATS step); Backspace/'u' undoes the last point; 's' saves once
-the session reaches DONE; Esc aborts without writing anything.
+polygon (SEATS step) or the inner-oval trace (INNER_OVAL step);
+Backspace/'u' undoes the last point; 's' saves once the session reaches
+DONE; Esc aborts without writing anything.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ from pydantic import ValidationError
 from poker_vision.calibration.authoring import CalibrationAuthoring, write_calibration_authoring
 from poker_vision.calibration.compile import compile_calibration
 from poker_vision.calibration.mark_zones import (
-    DEFAULT_CHIP_ZONE_SHRINK_FACTOR,
+    DEFAULT_CHIP_ZONE_INSET_PIXELS,
     Point,
     build_authoring_from_marked_zones,
 )
@@ -38,6 +39,8 @@ _WINDOW_NAME = "calib mark-zones"
 _COLOR_SEAT_DONE = (200, 120, 0)
 _COLOR_SEAT_CURRENT = (0, 255, 255)
 _COLOR_DEALER = (0, 0, 255)
+_COLOR_INNER_OVAL_CURRENT = (0, 255, 0)
+_COLOR_INNER_OVAL_DONE = (0, 180, 0)
 _COLOR_BOARD = (255, 0, 255)
 _COLOR_TEXT = (255, 255, 255)
 
@@ -60,6 +63,9 @@ _MAX_DISPLAY_DIMENSION = 1400
 _STEP_INSTRUCTIONS: dict[Step, str] = {
     Step.SEATS: "Click a seat's player_area corners, Enter/Space to finish it (need 10 seats)",
     Step.PICK_DEALER: "Click inside the seat that is the fixed card-dealer (Kartengeber) position",
+    Step.INNER_OVAL: (
+        "Trace the inner oval (action area) rail, point by point, Enter/Space to finish"
+    ),
     Step.BOARD_ZONE: "Click board_zone's 4 corners",
     Step.DONE: "Done -- 's' to save, Esc to discard",
 }
@@ -97,6 +103,11 @@ def _render_content(base_image: np.ndarray, session: ClickSession) -> np.ndarray
     if session.step is Step.SEATS:
         _draw_polyline(image, session.current_polygon, _COLOR_SEAT_CURRENT, closed=False)
 
+    if session.step is Step.INNER_OVAL:
+        _draw_polyline(image, session.inner_oval_points, _COLOR_INNER_OVAL_CURRENT, closed=False)
+    elif session.step in (Step.BOARD_ZONE, Step.DONE) and session.inner_oval_points:
+        _draw_polyline(image, session.inner_oval_points, _COLOR_INNER_OVAL_DONE, closed=True)
+
     if session.step is Step.BOARD_ZONE:
         _draw_polyline(image, session.board_zone_points, _COLOR_BOARD, closed=False)
     elif session.step is Step.DONE:
@@ -125,7 +136,7 @@ def run_interactive_mark_zones(
     image_path: Path,
     out_path: Path,
     table_id: str,
-    chip_zone_shrink_factor: float = DEFAULT_CHIP_ZONE_SHRINK_FACTOR,
+    chip_zone_inset_pixels: float = DEFAULT_CHIP_ZONE_INSET_PIXELS,
 ) -> int:
     """Open `image_path` in a click-to-mark window and write the resulting
     `CalibrationAuthoring` to `out_path` on save (REQ-10a). Returns an exit
@@ -180,6 +191,11 @@ def run_interactive_mark_zones(
                     session.finish_polygon()
                 except ValueError as exc:
                     print(f"mark-zones: {exc}", file=sys.stderr)
+            if key in (_KEY_ENTER, _KEY_SPACE) and session.step is Step.INNER_OVAL:
+                try:
+                    session.finish_inner_oval()
+                except ValueError as exc:
+                    print(f"mark-zones: {exc}", file=sys.stderr)
             if key in (_KEY_BACKSPACE, ord("u")):
                 session.undo()
             if key == ord("s") and session.step is Step.DONE:
@@ -190,7 +206,7 @@ def run_interactive_mark_zones(
     try:
         marked = session.build()
         authoring = build_authoring_from_marked_zones(
-            marked, table_id=table_id, chip_zone_shrink_factor=chip_zone_shrink_factor
+            marked, table_id=table_id, chip_zone_inset_pixels=chip_zone_inset_pixels
         )
     except (ValueError, ValidationError) as exc:
         print(f"mark-zones: {exc}", file=sys.stderr)
