@@ -12,6 +12,7 @@ from poker_vision.calibration.mark_zones import (
     build_authoring_from_marked_zones,
     number_seats_clockwise,
 )
+from poker_vision.calibration.topology import polygon_contains
 
 # --- number_seats_clockwise --------------------------------------------------
 
@@ -185,6 +186,37 @@ def test_build_authoring_accepts_chip_zone_inset_pixels_of_zero():
     player_points = {(p.x, p.y) for p in seat.zones.player_area.points}
     chip_points = {(p.x, p.y) for p in seat.zones.chip_zone.points}
     assert chip_points == player_points
+
+
+def test_build_authoring_chip_zone_handles_a_concave_seat():
+    # A concave (non-star-shaped) player_area with a notch cut into one
+    # side -- REQ-11 explicitly allows this, but an earlier version of
+    # `_derive_chip_zone` picked each edge's outward direction by comparing
+    # it against the seat's own (vertex-average) centroid, which isn't
+    # guaranteed to sit on the interior side of every edge of a concave
+    # shape. That reversed the notch edges' normals, offsetting them
+    # *outward* instead of inward and producing a self-intersecting
+    # chip_zone. Edge orientation must come from the whole polygon's
+    # winding instead (a global, shape-independent fact), not a per-edge
+    # comparison against a single reference point.
+    notched = [(0, 0), (10, 0), (10, 10), (6, 10), (6, 3), (4, 3), (4, 10), (0, 10)]
+    seats = {
+        "north": _square(0, -500, half=20),
+        "east": _square(500, 0, half=20),
+        "notched": notched,
+    }
+    marked = MarkedZones(
+        seat_polygons=seats,
+        dealer_seat_key="north",
+        inner_oval_points=[(-100, -100), (100, -100), (100, 100), (-100, 100)],
+        board_zone_points=[(3000, -3000), (3020, -3000), (3020, -2980), (3000, -2980)],
+        image_size=(4000, 4000),
+    )
+    authoring = build_authoring_from_marked_zones(marked, table_id="t", chip_zone_inset_pixels=1.0)
+    notched_seat = next(s for s in authoring.seats if len(s.zones.player_area.points) == 8)
+    player_area = notched_seat.zones.player_area
+    chip_zone = notched_seat.zones.chip_zone
+    assert polygon_contains(player_area, chip_zone)
 
 
 def test_build_authoring_chip_zone_bounds_a_sharp_corner_via_miter_limit():

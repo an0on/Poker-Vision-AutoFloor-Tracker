@@ -130,22 +130,47 @@ def _polygon_centroid(points: list[Point]) -> Point:
     return (sum(p[0] for p in points) / n, sum(p[1] for p in points) / n)
 
 
-def _edge_outward_unit_normal(p1: Point, p2: Point, interior_reference: Point) -> Point:
-    """The unit normal of edge `p1`->`p2` that points away from
-    `interior_reference` (a point known to be inside the polygon, e.g. its
-    own centroid) -- i.e. the edge's true *outward* normal, regardless of
-    the polygon's winding order.
+def _polygon_signed_area(points: list[Point]) -> float:
+    """Shoelace signed area -- its *sign* gives the polygon's winding
+    direction (same formula/convention as `geometry.polygon_signed_area`,
+    reimplemented here for plain tuples rather than `TablePoint`s, since
+    this module works in raw click coordinates before any of that gets
+    constructed).
+    """
+    total = 0.0
+    n = len(points)
+    for i in range(n):
+        x1, y1 = points[i]
+        x2, y2 = points[(i + 1) % n]
+        total += x1 * y2 - x2 * y1
+    return total / 2.0
+
+
+def _edge_outward_unit_normal(p1: Point, p2: Point, positive_winding: bool) -> Point:
+    """The unit normal of edge `p1`->`p2` that points away from the
+    polygon's interior, given whether the *whole* polygon winds positively
+    (`_polygon_signed_area(points) > 0`).
+
+    Deliberately not "whichever side is farther from the centroid": that
+    heuristic assumes the interior reference point sits on the interior
+    side of every edge, true for a convex or star-shaped polygon but not
+    for an arbitrary concave one (a seat with a genuine notch can easily
+    have an edge whose interior side isn't the side its own centroid is
+    on) -- REQ-11 explicitly allows concave `player_area` polygons, and
+    this reversed a real one's edges, silently producing an outward-offset
+    (self-intersecting or escaping) chip_zone instead of an inward one.
+    Winding direction is a single, whole-polygon fact (Green's theorem:
+    interior is consistently on one fixed side of every directed edge, for
+    *any* simple polygon, convex or not), so deriving each edge's outward
+    side from it is correct regardless of local shape.
     """
     dx, dy = p2[0] - p1[0], p2[1] - p1[1]
     length = math.hypot(dx, dy)
     if length == 0:
         raise ValueError(f"degenerate zero-length polygon edge at {p1}")
-    candidate = (-dy / length, dx / length)
-    midpoint = ((p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2)
-    to_midpoint = (midpoint[0] - interior_reference[0], midpoint[1] - interior_reference[1])
-    if _dot(candidate, to_midpoint) < 0:
-        candidate = (-candidate[0], -candidate[1])
-    return candidate
+    if positive_winding:
+        return (dy / length, -dx / length)
+    return (-dy / length, dx / length)
 
 
 def _line_intersection(point_a: Point, normal_a: Point, point_b: Point, normal_b: Point) -> Point:
@@ -238,12 +263,13 @@ def _derive_chip_zone(
     """
     seat_centroid = _polygon_centroid(points)
     outward = _unit((seat_centroid[0] - table_centroid[0], seat_centroid[1] - table_centroid[1]))
+    positive_winding = _polygon_signed_area(points) > 0
 
     n = len(points)
     edge_lines: list[tuple[Point, Point, float]] = []
     for i in range(n):
         p1, p2 = points[i], points[(i + 1) % n]
-        normal = _edge_outward_unit_normal(p1, p2, seat_centroid)
+        normal = _edge_outward_unit_normal(p1, p2, positive_winding)
         offset = 0.0 if _dot(normal, outward) > _RAIL_NORMAL_MIN_DOT else inset_pixels
         line_point = (p1[0] - normal[0] * offset, p1[1] - normal[1] * offset)
         edge_lines.append((line_point, normal, offset))
@@ -369,6 +395,11 @@ def build_authoring_from_marked_zones(
     seat_ids = number_seats_clockwise(marked.seat_polygons, marked.dealer_seat_key)
     seats = []
     for key, points in marked.seat_polygons.items():
+        # Validated before deriving chip_zone from it: a degenerate or
+        # self-intersecting player_area should fail with REQ-11's own
+        # clear message about *that*, not surface confusingly out of the
+        # unrelated chip_zone derivation below.
+        player_area = _to_table_polygon(points)
         try:
             chip_zone_points = _derive_chip_zone(points, table_centroid, chip_zone_inset_pixels)
             chip_zone = _to_table_polygon(chip_zone_points)
@@ -391,7 +422,7 @@ def build_authoring_from_marked_zones(
         seats.append(
             CalibrationSeat(
                 seat_id=seat_ids[key],
-                zones=SeatZones(player_area=_to_table_polygon(points), chip_zone=chip_zone),
+                zones=SeatZones(player_area=player_area, chip_zone=chip_zone),
             )
         )
 
