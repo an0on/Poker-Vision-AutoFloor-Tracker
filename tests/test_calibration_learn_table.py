@@ -20,6 +20,7 @@ from poker_vision.calibration.learn_table import (
     LearnTableConfig,
     LearnTableError,
     _center_strip_mask,
+    _check_inlier_spread,
     _filter_reliable_matches,
     learn_table_calibration,
 )
@@ -430,6 +431,37 @@ def test_learn_table_config_rejects_invalid_center_strip_margin_ratio(bad_margin
 def test_learn_table_config_rejects_invalid_aspect_ratio_tolerance(bad_tolerance):
     with pytest.raises(LearnTableError, match="aspect_ratio_tolerance"):
         LearnTableConfig(aspect_ratio_tolerance=bad_tolerance)
+
+
+@pytest.mark.parametrize("bad_ratio", [-0.1, 1.1, float("nan"), float("inf")])
+def test_learn_table_config_rejects_invalid_min_inlier_spread_ratio(bad_ratio):
+    with pytest.raises(LearnTableError, match="min_inlier_spread_ratio"):
+        LearnTableConfig(min_inlier_spread_ratio=bad_ratio)
+
+
+# --- _check_inlier_spread: reject a spatially clustered inlier set ----------
+
+
+def test_check_inlier_spread_rejects_clustered_inliers():
+    # All inliers sit within a tiny 10x10 corner of a 1000x1000 mask --
+    # exactly the real false-positive case this check exists for (a shared
+    # logo/text glyph, not real coverage of the table).
+    clustered = np.array([[100.0, 100.0], [105.0, 102.0], [108.0, 108.0], [102.0, 105.0]])
+    with pytest.raises(LearnTableError, match="spatially clustered"):
+        _check_inlier_spread(clustered, mask_extent=(1000.0, 1000.0), min_spread_ratio=0.3)
+
+
+def test_check_inlier_spread_accepts_well_spread_inliers():
+    spread = np.array([[0.0, 0.0], [900.0, 50.0], [50.0, 900.0], [900.0, 900.0]])
+    _check_inlier_spread(spread, mask_extent=(1000.0, 1000.0), min_spread_ratio=0.3)
+
+
+def test_check_inlier_spread_rejects_clustered_on_one_axis_only():
+    # Well spread horizontally, but every point lands within a thin
+    # vertical band -- both axes must independently clear the threshold.
+    horizontal_line = np.array([[0.0, 500.0], [300.0, 505.0], [600.0, 495.0], [900.0, 500.0]])
+    with pytest.raises(LearnTableError, match="spatially clustered"):
+        _check_inlier_spread(horizontal_line, mask_extent=(1000.0, 1000.0), min_spread_ratio=0.3)
 
 
 def test_learn_table_based_on_is_carried_through(reference_photo, live_photo):

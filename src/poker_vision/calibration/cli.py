@@ -46,6 +46,7 @@ from poker_vision.calibration.learn_table import (
     DEFAULT_ASPECT_RATIO_TOLERANCE,
     DEFAULT_CENTER_STRIP_MARGIN_RATIO,
     DEFAULT_MIN_INLIER_RATIO,
+    DEFAULT_MIN_INLIER_SPREAD_RATIO,
     DEFAULT_MIN_MATCH_COUNT,
     DEFAULT_RANSAC_REPROJ_THRESHOLD_PIXELS,
     LearnTableConfig,
@@ -208,6 +209,7 @@ def _cmd_learn_table(args: argparse.Namespace) -> int:
         config = LearnTableConfig(
             min_match_count=args.min_match_count,
             min_inlier_ratio=args.min_inlier_ratio,
+            min_inlier_spread_ratio=args.min_inlier_spread_ratio,
             ransac_reproj_threshold=args.ransac_reproj_threshold,
             center_strip_margin_ratio=args.center_strip_margin_ratio,
             aspect_ratio_tolerance=args.aspect_ratio_tolerance,
@@ -382,6 +384,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     learn_table_parser.add_argument(
         "--min-inlier-ratio", type=float, default=DEFAULT_MIN_INLIER_RATIO
+    )
+    learn_table_parser.add_argument(
+        "--min-inlier-spread-ratio",
+        type=float,
+        default=DEFAULT_MIN_INLIER_SPREAD_RATIO,
+        help="min fraction of the center-strip mask's extent RANSAC inliers must span",
     )
     learn_table_parser.add_argument(
         "--ransac-reproj-threshold", type=float, default=DEFAULT_RANSAC_REPROJ_THRESHOLD_PIXELS

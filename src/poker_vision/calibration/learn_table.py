@@ -21,8 +21,9 @@ Pipeline (REQ-10b):
    table-plane matrix for the new photo. The zones themselves are already
    in table-plane coordinates and are carried over unchanged -- only the
    image -> table homography differs per physical table instance.
-3. Too few matches, or too low a RANSAC inlier ratio, raise
-   `LearnTableError` instead of emitting an implausible calibration
+3. Too few matches, too low a RANSAC inlier ratio, or inliers spatially
+   clustered in too small a region of the mask (`_check_inlier_spread`)
+   raise `LearnTableError` instead of emitting an implausible calibration
    (AC-6b).
 
 Camera intrinsics, distortion, `inference_resolution` and table dimensions
@@ -50,15 +51,20 @@ that additionally carries its own club branding (logos not present on the
 reference table at all, not just a different felt colour -- a real
 violation of REQ-10b's "same design" premise), the *default* thresholds
 correctly rejected it (0.44 inlier ratio) -- exactly AC-6b's required
-behavior. Forcing it through anyway with relaxed thresholds produced a
-homography that fit the small immediately-matching region (the shared
-"DOPO POKER" card outline) but extrapolated to a badly wrong result
-everywhere else (seat zones landing entirely off the table) -- most of
-the "matches" behind that lower ratio were themselves spurious, matching
-the reference's plain text against the live photo's extra logos/objects.
-Only loosen these per-call for a specific photo you've separately
-confirmed (e.g. by rendering `debug.overlay.draw_zones` over it) is
-actually a correct match, never as a new default.
+behavior. Forcing it through anyway with relaxed thresholds originally
+produced a homography that fit the small immediately-matching region (the
+shared "DOPO POKER" card outline) but extrapolated to a badly wrong result
+everywhere else (seat zones landing entirely off the table): most of the
+"matches" behind that lower ratio were themselves spurious, matching the
+reference's plain text against the live photo's extra logos/objects, but
+concentrated closely enough together to still pass a lenient inlier
+*ratio*. `_check_inlier_spread` now independently catches this exact
+case (its inliers covered only ~10% of the mask's extent on both axes,
+against 60-95% for every one of the other three real photos verified as
+actually correct) regardless of how `min_inlier_ratio`/`min_match_count`
+are set -- but still only loosen those two per-call for a specific photo
+you've separately confirmed (e.g. by rendering `debug.overlay.draw_zones`
+over it) is actually a correct match, never as a new default.
 """
 
 from __future__ import annotations
@@ -78,6 +84,19 @@ from poker_vision.calibration.undistort import distort_points, undistort_points
 DEFAULT_MIN_MATCH_COUNT = 15
 DEFAULT_MIN_INLIER_RATIO = 0.5
 DEFAULT_RANSAC_REPROJ_THRESHOLD_PIXELS = 5.0
+# Minimum fraction of the center-strip mask's own bounding-box extent (each
+# axis independently) the RANSAC inliers must span. A homography has 8
+# degrees of freedom: a small, spatially clustered set of inliers (e.g. all
+# sitting around one shared logo/text region) can still reach a high inlier
+# *ratio* while leaving the fit almost entirely unconstrained everywhere
+# else on the table, extrapolating to badly wrong seat zones there even
+# though it fits well right where the matches are. Verified against a real
+# false-positive case (a physical table with its own extra, reference-
+# absent branding): its inliers spanned only ~10% of the mask extent on
+# both axes, against 60-95% for every real match verified as actually
+# correct (self-match and two other physical tables) -- 0.3 sits with
+# ample margin on both sides of that gap.
+DEFAULT_MIN_INLIER_SPREAD_RATIO = 0.3
 # Fraction of the photo's own width -- a fixed, tight band width around
 # `dealer_area`'s boundary curve regardless of how large that zone itself
 # is, wide enough to absorb authoring imprecision (a hand-clicked polygon
@@ -123,6 +142,7 @@ class LearnTableConfig:
 
     min_match_count: int = DEFAULT_MIN_MATCH_COUNT
     min_inlier_ratio: float = DEFAULT_MIN_INLIER_RATIO
+    min_inlier_spread_ratio: float = DEFAULT_MIN_INLIER_SPREAD_RATIO
     ransac_reproj_threshold: float = DEFAULT_RANSAC_REPROJ_THRESHOLD_PIXELS
     center_strip_margin_ratio: float = DEFAULT_CENTER_STRIP_MARGIN_RATIO
     aspect_ratio_tolerance: float = DEFAULT_ASPECT_RATIO_TOLERANCE
@@ -136,6 +156,11 @@ class LearnTableConfig:
         if not math.isfinite(self.min_inlier_ratio) or not (0.0 <= self.min_inlier_ratio <= 1.0):
             raise LearnTableError(
                 f"min_inlier_ratio must be a finite value in [0, 1], got {self.min_inlier_ratio}"
+            )
+        spread_ratio = self.min_inlier_spread_ratio
+        if not math.isfinite(spread_ratio) or not (0.0 <= spread_ratio <= 1.0):
+            raise LearnTableError(
+                f"min_inlier_spread_ratio must be a finite value in [0, 1], got {spread_ratio}"
             )
         if not math.isfinite(self.ransac_reproj_threshold) or self.ransac_reproj_threshold <= 0.0:
             raise LearnTableError(
@@ -289,6 +314,51 @@ def _center_strip_mask(
     return mask
 
 
+def _mask_bbox_extent(mask: np.ndarray) -> tuple[float, float]:
+    """(width, height) of the bounding box of `mask`'s nonzero pixels.
+
+    The reference scale `_check_inlier_spread` measures RANSAC inliers
+    against -- computed once from the actual mask rather than re-deriving
+    the zone geometry a second time, so it can never drift out of sync
+    with what `_match_keypoints` actually restricted the search to.
+    """
+    ys, xs = np.nonzero(mask)
+    return float(xs.max() - xs.min()), float(ys.max() - ys.min())
+
+
+def _check_inlier_spread(
+    reference_points: np.ndarray, mask_extent: tuple[float, float], min_spread_ratio: float
+) -> None:
+    """Reject a homography whose RANSAC inliers are spatially clustered in
+    a small corner of the center-strip mask, even if their inlier *ratio*
+    is high.
+
+    A homography has 8 degrees of freedom: a cluster of correspondences
+    concentrated in one small region (e.g. all sitting around one shared
+    logo/text glyph) can still satisfy `cv2.findHomography`'s reprojection
+    threshold there while leaving the fit almost entirely unconstrained
+    everywhere else on the table -- extrapolating to a badly wrong result
+    (verified against a real false-positive case: seat zones landing
+    entirely off the table) despite a passing inlier ratio. Requiring the
+    inliers to actually span a meaningful fraction of the mask's own
+    extent, on both axes independently, catches this the ratio check
+    alone cannot.
+    """
+    mask_width, mask_height = mask_extent
+    x_spread = float(reference_points[:, 0].max() - reference_points[:, 0].min())
+    y_spread = float(reference_points[:, 1].max() - reference_points[:, 1].min())
+    x_ratio = x_spread / mask_width if mask_width > 0 else 0.0
+    y_ratio = y_spread / mask_height if mask_height > 0 else 0.0
+    if x_ratio < min_spread_ratio or y_ratio < min_spread_ratio:
+        raise LearnTableError(
+            "RANSAC inliers are too spatially clustered to trust (covering "
+            f"{x_ratio:.2f}x{y_ratio:.2f} of the center-strip mask's extent, "
+            f"required >= {min_spread_ratio:.2f} on both axes) -- a locally-fitting "
+            "homography can still extrapolate to a badly wrong result elsewhere on "
+            "the table"
+        )
+
+
 def _filter_reliable_matches(
     raw_matches: list[list[cv2.DMatch]], min_match_count: int
 ) -> list[cv2.DMatch]:
@@ -367,6 +437,7 @@ def _solve_live_to_reference_homography(
     live_points_raw: np.ndarray,
     reference_points_raw: np.ndarray,
     reference: CalibrationRuntime,
+    mask_extent: tuple[float, float],
     config: LearnTableConfig,
 ) -> np.ndarray:
     """RANSAC-homography over the matched keypoints, in undistorted pixel
@@ -402,6 +473,8 @@ def _solve_live_to_reference_homography(
             f"too few reliable inlier matches after RANSAC ({inliers}/{total} = "
             f"{inlier_ratio:.2f} inlier ratio, required >= {config.min_inlier_ratio:.2f})"
         )
+    inlier_reference_points = dst[inlier_mask.ravel().astype(bool)]
+    _check_inlier_spread(inlier_reference_points, mask_extent, config.min_inlier_spread_ratio)
     return homography
 
 
@@ -469,12 +542,13 @@ def learn_table_calibration(
         reference_gray.shape[0],
         config.center_strip_margin_ratio,
     )
+    mask_extent = _mask_bbox_extent(reference_mask)
 
     live_points_raw, reference_points_raw = _match_keypoints(
         reference_gray, live_gray, reference_mask, config
     )
     live_to_reference = _solve_live_to_reference_homography(
-        live_points_raw, reference_points_raw, reference, config
+        live_points_raw, reference_points_raw, reference, mask_extent, config
     )
     homography = _compose_homography(reference.homography.forward, live_to_reference)
 
