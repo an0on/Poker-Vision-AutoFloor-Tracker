@@ -188,6 +188,43 @@ def test_build_authoring_accepts_chip_zone_inset_pixels_of_zero():
     assert chip_points == player_points
 
 
+def test_build_authoring_chip_zone_offsets_a_collinear_vertex_in_place():
+    # Three consecutive collinear clicks along a locally-straight stretch
+    # of a freehand trace are normal input (not a special case the operator
+    # has to avoid): the two edges meeting at the middle point are then
+    # parallel, and `_line_intersection` can't find a crossing for them.
+    # An earlier version's fallback answered with one of the *lines'* own
+    # anchor points instead of the actual vertex, silently folding the
+    # middle point back towards its neighbour instead of offsetting it in
+    # place. The middle point here (0, 50) is on the seat's inner edge (a
+    # non-rail edge, inset by 5px) -- its chip_zone counterpart must move
+    # straight along that edge's own normal, landing at x == 0, not drift
+    # toward the x == 50 or x == -50 of its neighbours.
+    collinear_seat = [(-50.0, -50.0), (50.0, -50.0), (50.0, 50.0), (0.0, 50.0), (-50.0, 50.0)]
+    # "north"/"east" are placed only to make the table centroid land at
+    # (0, 10030): far enough below "collinear" (centroid (0, 30)) that its
+    # top edge (y=-50) unambiguously classifies as the rail edge.
+    seats = {
+        "north": _square(-2000, 15030, half=20),
+        "east": _square(2000, 15030, half=20),
+        "collinear": collinear_seat,
+    }
+    marked = MarkedZones(
+        seat_polygons=seats,
+        dealer_seat_key="north",
+        inner_oval_points=[(-100, -100), (100, -100), (100, 100), (-100, 100)],
+        board_zone_points=[(3000, -3000), (3020, -3000), (3020, -2980), (3000, -2980)],
+        image_size=(20000, 20000),
+    )
+    authoring = build_authoring_from_marked_zones(marked, table_id="t", chip_zone_inset_pixels=5.0)
+    collinear_zone = next(s for s in authoring.seats if len(s.zones.player_area.points) == 5)
+    # Point order is preserved end to end (no stage in this pipeline
+    # reorders a polygon's points), so index 3 is still the collinear
+    # seat's own click index 3 -- (0, 50) in player_area.
+    middle_point = collinear_zone.zones.chip_zone.points[3]
+    assert middle_point.x == pytest.approx(0.0, abs=0.5)
+
+
 def test_build_authoring_chip_zone_handles_a_concave_seat():
     # A concave (non-star-shaped) player_area with a notch cut into one
     # side -- REQ-11 explicitly allows this, but an earlier version of

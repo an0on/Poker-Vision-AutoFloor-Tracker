@@ -173,18 +173,18 @@ def _edge_outward_unit_normal(p1: Point, p2: Point, positive_winding: bool) -> P
     return (-dy / length, dx / length)
 
 
-def _line_intersection(point_a: Point, normal_a: Point, point_b: Point, normal_b: Point) -> Point:
-    """Where the two lines (each given as a point on it + its normal) cross.
-
-    Falls back to `point_a` for (near-)parallel lines -- two adjacent edges
-    of a finely-traced curve are frequently near-collinear (consecutive
-    click points a curve's own tangent barely turns between), and both
-    lines coincide almost exactly in that case, so any point on either is
-    an equally good answer; there is no meaningfully "more correct" one.
+def _line_intersection(
+    point_a: Point, normal_a: Point, point_b: Point, normal_b: Point
+) -> Point | None:
+    """Where the two lines (each given as a point on it + its normal) cross,
+    or `None` for (near-)parallel lines -- no crossing exists then (or, for
+    truly coincident lines, infinitely many); the caller (`_offset_vertex`)
+    handles that case using the actual vertex, not one of these lines' own
+    arbitrary anchor points.
     """
     det = normal_a[0] * normal_b[1] - normal_a[1] * normal_b[0]
     if abs(det) < 1e-9:
-        return point_a
+        return None
     rhs_a = _dot(point_a, normal_a)
     rhs_b = _dot(point_b, normal_b)
     x = (rhs_a * normal_b[1] - rhs_b * normal_a[1]) / det
@@ -209,10 +209,20 @@ def _offset_vertex(
     away (see `_derive_chip_zone`'s docstring) -- then the bevel fallback,
     the average of each edge's own straight-perpendicular offset of
     `vertex`.
+
+    The same bevel also covers the (near-)parallel case (three collinear
+    consecutive clicks, a normal thing to have in a freehand curve trace):
+    `_line_intersection` returns `None` there since two parallel lines
+    don't cross (or, if exactly coincident, cross everywhere) -- an
+    earlier version fell back to one of the *lines'* own anchor points
+    instead of `vertex`, which silently folded that vertex back towards
+    the previous one instead of offsetting it in place.
     """
     miter = _line_intersection(point_a, normal_a, point_b, normal_b)
     max_offset = max(offset_a, offset_b)
-    if max_offset > 0 and _dist(vertex, miter) > _MITER_LIMIT_FACTOR * max_offset:
+    miter_limit = _MITER_LIMIT_FACTOR * max_offset
+    use_bevel = miter is None or (max_offset > 0 and _dist(vertex, miter) > miter_limit)
+    if use_bevel:
         bevel_a = (vertex[0] - normal_a[0] * offset_a, vertex[1] - normal_a[1] * offset_a)
         bevel_b = (vertex[0] - normal_b[0] * offset_b, vertex[1] - normal_b[1] * offset_b)
         return ((bevel_a[0] + bevel_b[0]) / 2, (bevel_a[1] + bevel_b[1]) / 2)
