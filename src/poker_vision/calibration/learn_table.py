@@ -37,10 +37,28 @@ The live photo should show an empty table, same as the one `calib mark-
 zones` was originally run against (REQ-10a): cards/chips lying across the
 center strip reduce how much of that region actually matches between the
 two photos and can push the RANSAC inlier ratio below `min_inlier_ratio`.
-Verified against a real second physical table (different felt colour, a
-hand already in progress) -- the geometry recovered was accurate, but only
-after loosening `min_inlier_ratio`/`min_match_count` from their defaults;
-an empty-table photo is expected to clear the defaults comfortably.
+Verified against two real second physical tables (different felt colour,
+one with a hand already in progress): one cleared the default thresholds
+outright, the other needed `min_inlier_ratio`/`min_match_count` loosened
+from their defaults, and the recovered geometry was accurate in both
+cases -- an empty-table photo is expected to clear the defaults
+comfortably.
+
+Do not loosen `min_inlier_ratio`/`min_match_count` below their defaults as
+a blanket policy, though: verified against a third real physical table
+that additionally carries its own club branding (logos not present on the
+reference table at all, not just a different felt colour -- a real
+violation of REQ-10b's "same design" premise), the *default* thresholds
+correctly rejected it (0.44 inlier ratio) -- exactly AC-6b's required
+behavior. Forcing it through anyway with relaxed thresholds produced a
+homography that fit the small immediately-matching region (the shared
+"DOPO POKER" card outline) but extrapolated to a badly wrong result
+everywhere else (seat zones landing entirely off the table) -- most of
+the "matches" behind that lower ratio were themselves spurious, matching
+the reference's plain text against the live photo's extra logos/objects.
+Only loosen these per-call for a specific photo you've separately
+confirmed (e.g. by rendering `debug.overlay.draw_zones` over it) is
+actually a correct match, never as a new default.
 """
 
 from __future__ import annotations
