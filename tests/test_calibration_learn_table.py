@@ -18,6 +18,7 @@ from poker_vision.calibration.homography import HomographyMatrix
 from poker_vision.calibration.learn_table import (
     LearnTableConfig,
     LearnTableError,
+    _filter_reliable_matches,
     learn_table_calibration,
 )
 from poker_vision.calibration.runtime import CalibrationRuntime
@@ -289,6 +290,70 @@ def test_learn_table_rejects_unrelated_live_photo_low_inlier_ratio(tmp_path, ref
             based_on="test",
             config=LearnTableConfig(min_match_count=4),
         )
+
+
+# --- _filter_reliable_matches: one-to-one deduplication ----------------------
+
+
+def _dmatch(query_idx: int, train_idx: int, distance: float) -> cv2.DMatch:
+    return cv2.DMatch(query_idx, train_idx, distance)
+
+
+def test_filter_reliable_matches_keeps_best_per_reference_keypoint():
+    # Live keypoints 0 and 1 both pass the ratio test against reference
+    # keypoint 5 (a repeated pattern in the live photo, e.g. AC-6b's
+    # concern about symmetric print/branding) -- only the closer
+    # (lower-distance) one, live keypoint 0, should survive.
+    raw_matches = [
+        [_dmatch(0, 5, 10.0), _dmatch(0, 6, 40.0)],
+        [_dmatch(1, 5, 20.0), _dmatch(1, 7, 40.0)],
+        [_dmatch(2, 8, 5.0), _dmatch(2, 9, 40.0)],
+    ]
+    good = _filter_reliable_matches(raw_matches, min_match_count=1)
+    train_indices = [m.trainIdx for m in good]
+    assert len(train_indices) == len(set(train_indices))
+    assert any(m.queryIdx == 0 and m.trainIdx == 5 for m in good)
+    assert not any(m.queryIdx == 1 for m in good)
+
+
+def test_filter_reliable_matches_rejects_ambiguous_ratio_test_matches():
+    # Best and second-best reference candidates are nearly equidistant --
+    # Lowe's ratio test can't tell them apart, so neither counts.
+    raw_matches = [[_dmatch(0, 1, 10.0), _dmatch(0, 2, 10.5)]]
+    with pytest.raises(LearnTableError, match="too few"):
+        _filter_reliable_matches(raw_matches, min_match_count=1)
+
+
+def test_filter_reliable_matches_raises_below_min_match_count():
+    raw_matches = [[_dmatch(0, 1, 1.0), _dmatch(0, 2, 100.0)]]
+    with pytest.raises(LearnTableError, match=r"need >= 5, got 1"):
+        _filter_reliable_matches(raw_matches, min_match_count=5)
+
+
+# --- LearnTableConfig validation ---------------------------------------------
+
+
+def test_learn_table_config_rejects_too_few_min_match_count():
+    with pytest.raises(LearnTableError, match="min_match_count"):
+        LearnTableConfig(min_match_count=3)
+
+
+@pytest.mark.parametrize("bad_ratio", [-0.1, 1.1, float("nan"), float("inf")])
+def test_learn_table_config_rejects_invalid_min_inlier_ratio(bad_ratio):
+    with pytest.raises(LearnTableError, match="min_inlier_ratio"):
+        LearnTableConfig(min_inlier_ratio=bad_ratio)
+
+
+@pytest.mark.parametrize("bad_threshold", [0.0, -1.0, float("nan"), float("inf")])
+def test_learn_table_config_rejects_invalid_ransac_reproj_threshold(bad_threshold):
+    with pytest.raises(LearnTableError, match="ransac_reproj_threshold"):
+        LearnTableConfig(ransac_reproj_threshold=bad_threshold)
+
+
+@pytest.mark.parametrize("bad_margin", [-0.5, float("nan"), float("inf")])
+def test_learn_table_config_rejects_invalid_center_strip_margin_ratio(bad_margin):
+    with pytest.raises(LearnTableError, match="center_strip_margin_ratio"):
+        LearnTableConfig(center_strip_margin_ratio=bad_margin)
 
 
 def test_learn_table_based_on_is_carried_through(reference_photo, live_photo):

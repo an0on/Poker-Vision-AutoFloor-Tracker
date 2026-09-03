@@ -34,6 +34,7 @@ resolution mismatch would silently invalidate that assumption.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -69,12 +70,43 @@ class LearnTableError(ValueError):
 
 @dataclass(frozen=True)
 class LearnTableConfig:
-    """Tunable thresholds for `learn_table_calibration` (REQ-10b step 3)."""
+    """Tunable thresholds for `learn_table_calibration` (REQ-10b step 3).
+
+    Validated at construction (not just against the built-in defaults)
+    since the CLI passes user-supplied values straight through: an
+    unvalidated `min_match_count` below 4 (`cv2.findHomography`'s DLT
+    minimum) or a non-finite `min_inlier_ratio` (e.g. `nan`, which makes
+    every `<` comparison against it false) would otherwise either crash
+    deep inside OpenCV or silently defeat the very reliability checks
+    REQ-10b step 3 requires.
+    """
 
     min_match_count: int = DEFAULT_MIN_MATCH_COUNT
     min_inlier_ratio: float = DEFAULT_MIN_INLIER_RATIO
     ransac_reproj_threshold: float = DEFAULT_RANSAC_REPROJ_THRESHOLD_PIXELS
     center_strip_margin_ratio: float = DEFAULT_CENTER_STRIP_MARGIN_RATIO
+
+    def __post_init__(self) -> None:
+        if self.min_match_count < 4:
+            raise LearnTableError(
+                f"min_match_count must be >= 4 (cv2.findHomography's minimum), "
+                f"got {self.min_match_count}"
+            )
+        if not math.isfinite(self.min_inlier_ratio) or not (0.0 <= self.min_inlier_ratio <= 1.0):
+            raise LearnTableError(
+                f"min_inlier_ratio must be a finite value in [0, 1], got {self.min_inlier_ratio}"
+            )
+        if not math.isfinite(self.ransac_reproj_threshold) or self.ransac_reproj_threshold <= 0.0:
+            raise LearnTableError(
+                "ransac_reproj_threshold must be a finite positive value, got "
+                f"{self.ransac_reproj_threshold}"
+            )
+        margin_ratio = self.center_strip_margin_ratio
+        if not math.isfinite(margin_ratio) or margin_ratio < 0.0:
+            raise LearnTableError(
+                "center_strip_margin_ratio must be a finite non-negative value, got "
+                f"{self.center_strip_margin_ratio}"
+            )
 
 
 def _read_grayscale(path: str | Path) -> np.ndarray:
@@ -148,6 +180,44 @@ def _center_strip_mask(shape: tuple[int, int], bbox: tuple[int, int, int, int]) 
     return mask
 
 
+def _filter_reliable_matches(
+    raw_matches: list[list[cv2.DMatch]], min_match_count: int
+) -> list[cv2.DMatch]:
+    """Lowe's ratio test, then deduplicate to the single best (lowest-
+    distance) match per reference keypoint.
+
+    `knnMatch(live, reference, k=2)` finds each live descriptor's own
+    nearest reference descriptor independently, so a repeated pattern in
+    the live photo (e.g. a symmetric card outline or a repeated logo) can
+    legitimately match several different live keypoints to the *same*
+    reference keypoint. Left alone, those duplicates would each count
+    separately toward `min_match_count` and the RANSAC inlier ratio,
+    letting a coherent-looking but wrong repeated-region match slip past
+    both reliability checks -- deduplicating enforces a proper one-to-one
+    correspondence before either check runs. Split out from
+    `_match_keypoints` so this filtering logic is directly unit-testable
+    against hand-built `cv2.DMatch` pairs, without needing real
+    images/ORB detection.
+    """
+    best_match_by_reference_index: dict[int, cv2.DMatch] = {}
+    for pair in raw_matches:
+        if len(pair) < 2:
+            continue
+        best, second_best = pair
+        if best.distance >= _LOWE_RATIO * second_best.distance:
+            continue
+        existing = best_match_by_reference_index.get(best.trainIdx)
+        if existing is None or best.distance < existing.distance:
+            best_match_by_reference_index[best.trainIdx] = best
+    good_matches = list(best_match_by_reference_index.values())
+    if len(good_matches) < min_match_count:
+        raise LearnTableError(
+            "too few reliable feature matches between reference and live photo "
+            f"(need >= {min_match_count}, got {len(good_matches)})"
+        )
+    return good_matches
+
+
 def _match_keypoints(
     reference_gray: np.ndarray,
     live_gray: np.ndarray,
@@ -174,18 +244,7 @@ def _match_keypoints(
         )
     matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
     raw_matches = matcher.knnMatch(live_descriptors, reference_descriptors, k=2)
-    good_matches = []
-    for pair in raw_matches:
-        if len(pair) < 2:
-            continue
-        best, second_best = pair
-        if best.distance < _LOWE_RATIO * second_best.distance:
-            good_matches.append(best)
-    if len(good_matches) < config.min_match_count:
-        raise LearnTableError(
-            "too few reliable feature matches between reference and live photo "
-            f"(need >= {config.min_match_count}, got {len(good_matches)})"
-        )
+    good_matches = _filter_reliable_matches(raw_matches, config.min_match_count)
     live_points = np.array(
         [live_keypoints[m.queryIdx].pt for m in good_matches], dtype=np.float64
     )
