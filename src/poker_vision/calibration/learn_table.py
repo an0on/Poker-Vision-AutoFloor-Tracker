@@ -28,8 +28,19 @@ Pipeline (REQ-10b):
 Camera intrinsics, distortion, `inference_resolution` and table dimensions
 are carried over from `reference` unchanged (REQ-10b's stated assumption:
 the same camera model/setup for every capture) -- checked against the
-actual photos' pixel dimensions rather than trusted blindly, since a
-resolution mismatch would silently invalidate that assumption.
+actual photos' aspect ratio rather than trusted blindly (a different pixel
+*resolution* at the same aspect ratio, e.g. from a photo resized by an
+export/sharing step, is resized back and accepted; a different aspect
+ratio is not -- see `_normalize_grayscale`).
+
+The live photo should show an empty table, same as the one `calib mark-
+zones` was originally run against (REQ-10a): cards/chips lying across the
+center strip reduce how much of that region actually matches between the
+two photos and can push the RANSAC inlier ratio below `min_inlier_ratio`.
+Verified against a real second physical table (different felt colour, a
+hand already in progress) -- the geometry recovered was accurate, but only
+after loosening `min_inlier_ratio`/`min_match_count` from their defaults;
+an empty-table photo is expected to clear the defaults comfortably.
 """
 
 from __future__ import annotations
@@ -50,6 +61,13 @@ DEFAULT_MIN_MATCH_COUNT = 15
 DEFAULT_MIN_INLIER_RATIO = 0.5
 DEFAULT_RANSAC_REPROJ_THRESHOLD_PIXELS = 5.0
 DEFAULT_CENTER_STRIP_MARGIN_RATIO = 0.15
+
+# Relative tolerance on width/height ratio when comparing a photo's aspect
+# ratio against the reference calibration's `inference_resolution`. A photo
+# at a different pixel resolution but the same framing (e.g. resized by an
+# export/compression step) is still usable -- see `_normalize_grayscale`;
+# a genuinely different framing/aspect ratio is not.
+DEFAULT_ASPECT_RATIO_TOLERANCE = 0.01
 
 # Lowe's ratio test threshold for filtering ORB/BFMatcher knn matches -- the
 # standard value from Lowe's original SIFT paper, equally applicable to any
@@ -84,6 +102,7 @@ class LearnTableConfig:
     min_inlier_ratio: float = DEFAULT_MIN_INLIER_RATIO
     ransac_reproj_threshold: float = DEFAULT_RANSAC_REPROJ_THRESHOLD_PIXELS
     center_strip_margin_ratio: float = DEFAULT_CENTER_STRIP_MARGIN_RATIO
+    aspect_ratio_tolerance: float = DEFAULT_ASPECT_RATIO_TOLERANCE
 
     def __post_init__(self) -> None:
         if self.min_match_count < 4:
@@ -106,6 +125,12 @@ class LearnTableConfig:
                 "center_strip_margin_ratio must be a finite non-negative value, got "
                 f"{self.center_strip_margin_ratio}"
             )
+        aspect_tolerance = self.aspect_ratio_tolerance
+        if not math.isfinite(aspect_tolerance) or aspect_tolerance < 0.0:
+            raise LearnTableError(
+                "aspect_ratio_tolerance must be a finite non-negative value, got "
+                f"{self.aspect_ratio_tolerance}"
+            )
 
 
 def _read_grayscale(path: str | Path) -> np.ndarray:
@@ -115,16 +140,44 @@ def _read_grayscale(path: str | Path) -> np.ndarray:
     return image
 
 
-def _check_resolution(
-    image: np.ndarray, expected_width: int, expected_height: int, label: str
-) -> None:
+def _normalize_grayscale(
+    image: np.ndarray,
+    expected_width: int,
+    expected_height: int,
+    aspect_ratio_tolerance: float,
+    label: str,
+) -> np.ndarray:
+    """Check `image`'s aspect ratio against the reference calibration's
+    `inference_resolution`, then resize it to that exact resolution if it
+    doesn't already match.
+
+    A photo doesn't have to come off the camera at the calibration's exact
+    pixel resolution to be usable -- e.g. after being resized by an export/
+    sharing step -- only at the *same framing* (aspect ratio). Distortion
+    is `0.0` in every calibration this project has authored so far, which
+    makes `undistort_points`/`distort_points` an identity operation
+    regardless of the specific camera-intrinsics values used, so resizing
+    the photo itself (not rescaling intrinsics) is the one thing that
+    actually needs to happen to bring it into the one fixed pixel space
+    `reference.homography` is defined against. A genuinely different
+    aspect ratio (different framing/camera, not just a resize) still
+    fails clearly rather than producing a silently distorted match.
+    """
     height, width = image.shape[:2]
-    if (width, height) != (expected_width, expected_height):
+    image_ratio = width / height
+    expected_ratio = expected_width / expected_height
+    relative_difference = abs(image_ratio - expected_ratio) / expected_ratio
+    if relative_difference > aspect_ratio_tolerance:
         raise LearnTableError(
-            f"{label} resolution {width}x{height} does not match the reference "
-            f"calibration's inference_resolution {expected_width}x{expected_height} "
-            "(REQ-10b assumes the same camera setup for every capture)"
+            f"{label} aspect ratio {width}x{height} ({image_ratio:.4f}) does not match "
+            f"the reference calibration's inference_resolution {expected_width}x"
+            f"{expected_height} ({expected_ratio:.4f}) -- REQ-10b assumes the same "
+            "camera framing for every capture (a different pixel resolution at the "
+            "same aspect ratio, e.g. from export/compression, is fine)"
         )
+    if (width, height) == (expected_width, expected_height):
+        return image
+    return cv2.resize(image, (expected_width, expected_height), interpolation=cv2.INTER_AREA)
 
 
 def _apply_homography_matrix(matrix: Matrix3x3, x: float, y: float) -> tuple[float, float]:
@@ -353,19 +406,31 @@ def learn_table_calibration(
     in the reference's own pixel space.
 
     Raises `LearnTableError` (a `ValueError`) if either image can't be
-    read, its resolution doesn't match `reference.inference_resolution`,
-    too few/unreliable feature matches are found, or the resulting
-    homography is degenerate (REQ-10b step 3, AC-6b) -- never returns an
-    implausible calibration silently.
+    read, its aspect ratio doesn't match `reference.inference_resolution`
+    (a different pixel resolution at the *same* aspect ratio is resized
+    and accepted -- see `_normalize_grayscale`), too few/unreliable
+    feature matches are found, or the resulting homography is degenerate
+    (REQ-10b step 3, AC-6b) -- never returns an implausible calibration
+    silently.
     """
     config = config or LearnTableConfig()
     expected_width = reference.inference_resolution.width
     expected_height = reference.inference_resolution.height
 
-    reference_gray = _read_grayscale(reference_image_path)
-    _check_resolution(reference_gray, expected_width, expected_height, "reference image")
-    live_gray = _read_grayscale(live_image_path)
-    _check_resolution(live_gray, expected_width, expected_height, "live image")
+    reference_gray = _normalize_grayscale(
+        _read_grayscale(reference_image_path),
+        expected_width,
+        expected_height,
+        config.aspect_ratio_tolerance,
+        "reference image",
+    )
+    live_gray = _normalize_grayscale(
+        _read_grayscale(live_image_path),
+        expected_width,
+        expected_height,
+        config.aspect_ratio_tolerance,
+        "live image",
+    )
 
     bbox = _center_strip_bbox(
         reference,

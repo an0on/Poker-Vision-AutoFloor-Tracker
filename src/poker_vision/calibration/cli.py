@@ -43,6 +43,7 @@ from poker_vision.calibration.authoring import (
 from poker_vision.calibration.compile import compile_calibration
 from poker_vision.calibration.geometry import TableUnit
 from poker_vision.calibration.learn_table import (
+    DEFAULT_ASPECT_RATIO_TOLERANCE,
     DEFAULT_CENTER_STRIP_MARGIN_RATIO,
     DEFAULT_MIN_INLIER_RATIO,
     DEFAULT_MIN_MATCH_COUNT,
@@ -209,6 +210,7 @@ def _cmd_learn_table(args: argparse.Namespace) -> int:
             min_inlier_ratio=args.min_inlier_ratio,
             ransac_reproj_threshold=args.ransac_reproj_threshold,
             center_strip_margin_ratio=args.center_strip_margin_ratio,
+            aspect_ratio_tolerance=args.aspect_ratio_tolerance,
         )
         runtime = learn_table_calibration(
             reference,
@@ -360,6 +362,13 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_table_parser = subparsers.add_parser(
         "learn-table",
         help="Derive a runtime calibration for a new photo of the same table design (REQ-10b)",
+        description=(
+            "Derive a runtime calibration for a new photo of the same table design "
+            "(REQ-10b). --live-image should show an empty table, same as the reference "
+            "photo calib mark-zones was originally run against -- cards/chips across "
+            "the center strip reduce match reliability and may need --min-inlier-ratio/"
+            "--min-match-count loosened from their defaults."
+        ),
     )
     learn_table_parser.add_argument("--reference-runtime", required=True, type=Path)
     learn_table_parser.add_argument("--reference-image", required=True, type=Path)
@@ -379,6 +388,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     learn_table_parser.add_argument(
         "--center-strip-margin-ratio", type=float, default=DEFAULT_CENTER_STRIP_MARGIN_RATIO
+    )
+    learn_table_parser.add_argument(
+        "--aspect-ratio-tolerance",
+        type=float,
+        default=DEFAULT_ASPECT_RATIO_TOLERANCE,
+        help="relative tolerance for a photo's aspect ratio vs. the reference's",
     )
     learn_table_parser.set_defaults(func=_cmd_learn_table)
 

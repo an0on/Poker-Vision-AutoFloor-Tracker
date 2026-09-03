@@ -234,18 +234,53 @@ def test_learn_table_rejects_missing_reference_image(tmp_path, live_photo):
         )
 
 
-def test_learn_table_rejects_wrong_resolution_live_image(tmp_path, reference_photo):
+def test_learn_table_rejects_wrong_aspect_ratio_live_image(tmp_path, reference_photo):
+    # Same pixel *count* as the reference, but square instead of 4:3 --
+    # a genuinely different framing, not just a resized re-export.
     reference_path, _ = reference_photo
-    wrong_size = np.full((HEIGHT // 2, WIDTH // 2), 100, dtype=np.uint8)
-    live_path = tmp_path / "wrong_size.png"
-    cv2.imwrite(str(live_path), wrong_size)
-    with pytest.raises(LearnTableError, match="resolution"):
+    wrong_aspect_ratio = np.full((1039, 1039), 100, dtype=np.uint8)
+    live_path = tmp_path / "wrong_aspect_ratio.png"
+    cv2.imwrite(str(live_path), wrong_aspect_ratio)
+    with pytest.raises(LearnTableError, match="aspect ratio"):
         learn_table_calibration(
             _reference_runtime(),
             reference_image_path=reference_path,
             live_image_path=live_path,
             based_on="test",
         )
+
+
+def test_learn_table_accepts_live_image_at_different_resolution_same_aspect_ratio(
+    tmp_path, reference_photo, live_photo
+):
+    # REQ-10b's "same camera setup" assumption doesn't require the exact
+    # same pixel count -- a live photo resized by an export/sharing step
+    # (same 4:3 framing, half the resolution) is still usable.
+    reference_path, _ = reference_photo
+    live_path, warp = live_photo
+    live_image = cv2.imread(str(live_path), cv2.IMREAD_GRAYSCALE)
+    half_resolution_live = cv2.resize(
+        live_image, (WIDTH // 2, HEIGHT // 2), interpolation=cv2.INTER_AREA
+    )
+    half_resolution_path = tmp_path / "live_half_resolution.png"
+    cv2.imwrite(str(half_resolution_path), half_resolution_live)
+
+    reference = _reference_runtime()
+    runtime = learn_table_calibration(
+        reference,
+        reference_image_path=reference_path,
+        live_image_path=half_resolution_path,
+        based_on="test",
+    )
+
+    tolerance = 0.01 * reference.table.width
+    for rx, ry in [(600, 450), (500, 350), (700, 550), (400, 300)]:
+        live_x, live_y = _apply_matrix(warp, rx, ry)
+        recovered = apply_homography_to_point(
+            PixelPoint(x=live_x, y=live_y), runtime.homography, runtime.camera, runtime.distortion
+        )
+        assert recovered.x == pytest.approx(rx, abs=tolerance)
+        assert recovered.y == pytest.approx(ry, abs=tolerance)
 
 
 def test_learn_table_rejects_blank_live_photo_too_few_matches(tmp_path, reference_photo):
@@ -354,6 +389,12 @@ def test_learn_table_config_rejects_invalid_ransac_reproj_threshold(bad_threshol
 def test_learn_table_config_rejects_invalid_center_strip_margin_ratio(bad_margin):
     with pytest.raises(LearnTableError, match="center_strip_margin_ratio"):
         LearnTableConfig(center_strip_margin_ratio=bad_margin)
+
+
+@pytest.mark.parametrize("bad_tolerance", [-0.1, float("nan"), float("inf")])
+def test_learn_table_config_rejects_invalid_aspect_ratio_tolerance(bad_tolerance):
+    with pytest.raises(LearnTableError, match="aspect_ratio_tolerance"):
+        LearnTableConfig(aspect_ratio_tolerance=bad_tolerance)
 
 
 def test_learn_table_based_on_is_carried_through(reference_photo, live_photo):
