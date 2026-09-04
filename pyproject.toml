@@ -39,9 +39,10 @@ packages = ["src/poker_vision"]
 line-length = 100
 target-version = "py311"
 src = ["src", "tests"]
-# Pre-existing scripts slated for archival/replacement under later PRD
-# requirements (REQ-6/8/9/10/43); out of scope for REQ-1.
-extend-exclude = ["overlays/scripts", "phase0_poc.py"]
+# Phase 0's approved, standalone proof-of-concept script (REQ-0.1-REQ-0.9);
+# frozen as-is per the Phase-0-Freigabe in PRD.md, not part of the src/
+# package's conventions.
+extend-exclude = ["phase0_poc.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
