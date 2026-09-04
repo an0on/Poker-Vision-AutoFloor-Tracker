@@ -20,11 +20,13 @@ but actual size keeps marker dimensions predictable at table distance.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import cv2
 from _aruco_markers import DICTIONARY_NAME, MARKER_LABELS
 from PIL import Image, ImageDraw, ImageFont
 
-OUT_PATH = "data/raw/markers/dopo_poker_table_a4.png"
+OUT_PATH = Path("data/raw/markers/dopo_poker_table_a4.png")
 
 DPI = 300
 PAGE_W, PAGE_H = round(8.27 * DPI), round(11.69 * DPI)  # A4 portrait
@@ -118,6 +120,7 @@ def main() -> None:
         marker_y = cell_y + LABEL_H
         page.paste(marker_img, (marker_x, marker_y))
 
+    OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     page.save(OUT_PATH, dpi=(DPI, DPI))
     print(f"wrote {OUT_PATH} ({PAGE_W}x{PAGE_H} @ {DPI} DPI, A4)")
 
