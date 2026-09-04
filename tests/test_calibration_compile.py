@@ -214,3 +214,51 @@ def test_compile_rejects_degenerate_homography_points():
     authoring = CalibrationAuthoring.model_validate(payload)
     with pytest.raises(ValueError):
         compile_calibration(authoring, based_on="x.json")
+
+
+# --- AC-5 / REQ-8: rotation is folded into the homography, not a raster step -
+
+
+def test_homography_recovers_same_table_points_for_a_180_degree_rotated_frame():
+    """REQ-8 replaced `build_rotated_raster*.py` with the claim that a
+    camera mounted 180 degrees rotated needs no raster pre-rotation step --
+    the rotation is just a different set of homography point
+    correspondences. A pixel at (px, py) in a normal-orientation frame of
+    width x height appears at (width-px, height-py) in a frame captured by
+    the same camera rotated 180 degrees around its optical axis. Compiling
+    a homography from the *rotated* correspondences and applying it to a
+    rotated-frame pixel must recover the same table point as the normal
+    homography does for the corresponding normal-frame pixel, within AC-5's
+    default <=1% of table width tolerance.
+    """
+    width = float(NO_DISTORTION_AUTHORING["inference_resolution"]["width"])
+    height = float(NO_DISTORTION_AUTHORING["inference_resolution"]["height"])
+    normal = compile_calibration(_authoring(), based_on="normal.json")
+
+    rotated_points = [
+        {
+            "image_point": {
+                "x": width - point["image_point"]["x"],
+                "y": height - point["image_point"]["y"],
+            },
+            "table_point": point["table_point"],
+        }
+        for point in NO_DISTORTION_AUTHORING["homography"]["points"]
+    ]
+    rotated = compile_calibration(
+        _authoring({"homography": {"points": rotated_points}}), based_on="rotated.json"
+    )
+
+    tolerance = 0.01 * normal.table.width
+    for px, py in [(300.0, 250.0), (150.0, 150.0), (450.0, 380.0)]:
+        expected = apply_homography_to_point(
+            PixelPoint(x=px, y=py), normal.homography, normal.camera, normal.distortion
+        )
+        recovered = apply_homography_to_point(
+            PixelPoint(x=width - px, y=height - py),
+            rotated.homography,
+            rotated.camera,
+            rotated.distortion,
+        )
+        assert recovered.x == pytest.approx(expected.x, abs=tolerance)
+        assert recovered.y == pytest.approx(expected.y, abs=tolerance)
