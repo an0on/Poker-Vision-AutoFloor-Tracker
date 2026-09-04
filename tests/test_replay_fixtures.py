@@ -15,18 +15,25 @@ the fault cases REQ-40 explicitly names:
   into seat_2's -- never losing its track_id, so this is one continuous
   `DealerSeatTracker` transition (AC-18), not two independent sightings.
   The button's first-ever resolution (seat_1) only establishes a starting
-  position and fires no event; only the later change to seat_2 does.
+  position and fires no event; only the later change to seat_2 does. The
+  button then vanishes from the script entirely (no further detections) --
+  AC-18 requires this to leave the dealer seat exactly as it was, so the
+  final `StateSnapshot` (not just the exported events) is asserted to
+  still report `seat_2`.
 - Occupancy + Dropout: a `chip` in seat_1's `chip_zone` is dropped for two
   frames (below `n_off`, AC-12's "kein seat_vacated"), reappears, then
   dropped for exactly `n_off` frames (AC-12's "genau eines"). A second,
   short-lived "ghost" chip in seat_2's `chip_zone` never reaches `n_on` and
   so never produces a `seat_occupied` at all.
-- Flop -> Turn -> River + a 3 -> 2 -> 3 flicker: three board cards reach
-  hysteresis together (flop), one is then dropped for exactly `n_off`
-  frames and re-detected (a genuine, hysteresis-mediated dip to a stable
-  count of 2, not merely a same-frame dip in raw detections) -- AC-19
-  requires this fires the `flop` event exactly once, not once per `3`.
-  A fourth and fifth card follow for turn/river.
+- Flop -> Turn -> River + genuine 3 -> 2 -> 3 and 4 -> 3 -> 4 flickers:
+  three board cards reach hysteresis together (flop); one is then dropped
+  for exactly `n_off` frames and re-detected (a real, hysteresis-mediated
+  dip to a stable count of 2, not merely a same-frame dip in raw
+  detections) -- AC-19 requires this fires `flop` exactly once, not once
+  per `3`. A fourth card confirms (turn), is itself dropped and
+  re-detected the same way (a real dip to 3 within the hand -- AC-19's
+  "4 -> 3 innerhalb einer Hand erzeugt kein Event"), then a fifth card
+  confirms (river).
 - Hand-Ende + zweite Hand: the board goes stably empty (`hand_ended`), then
   a short second hand starts and ends, its `hand_id` one more than the
   first's (AC-20).
@@ -116,8 +123,16 @@ def _calibration() -> CalibrationRuntime:
     )
 
 
-def _run_replay(tmp_path: Path, calibration: CalibrationRuntime, detector: Detector) -> list[dict]:
-    """Runs the full pipeline over the committed fixture and returns the exported events."""
+def _run_replay(
+    tmp_path: Path, calibration: CalibrationRuntime, detector: Detector
+) -> tuple[list[dict], PipelineStateMachine]:
+    """Runs the full pipeline over the committed fixture.
+
+    Returns the exported events and the state machine itself (not just its
+    events) -- AC-18's "Verschwinden des Buttons ändert den Dealer-Seat
+    nicht" is a claim about the *final snapshot*, not about the absence of
+    a `dealer_moved` event, so a caller needs the machine to check it.
+    """
     tracker = NearestMatchTracker(max_distance=_MAX_DISTANCE, table=calibration.table)
     hysteresis = HysteresisFilter(HysteresisConfig(n_on=_N_ON, n_off=_N_OFF))
     state_machine = PipelineStateMachine(["seat_1", "seat_2"])
@@ -141,7 +156,7 @@ def _run_replay(tmp_path: Path, calibration: CalibrationRuntime, detector: Detec
 
     assert reason == LoopExitReason.EOF
     lines = jsonl_exporter.path.read_text().splitlines()
-    return [json.loads(line) for line in lines]
+    return [json.loads(line) for line in lines], state_machine
 
 
 _EXPECTED_EVENTS = [
@@ -153,12 +168,19 @@ _EXPECTED_EVENTS = [
     (28, "seat_vacated", {"seat": "seat_1"}),
     (52, "hand_started", {"hand_id": 1}),
     (52, "street_changed", {"hand_id": 1, "street": "flop"}),
+    # frame 57: card 3 removed (n_off), count dips 3 -> 2, no event.
+    # frame 60: card 3 reconfirmed, count back to 3, no event (flop already
+    # current -- this is the "3 -> 2 -> 3" flicker, exactly one flop event).
     (63, "street_changed", {"hand_id": 1, "street": "turn"}),
-    (66, "street_changed", {"hand_id": 1, "street": "river"}),
-    (69, "hand_ended", {"hand_id": 1}),
-    (77, "hand_started", {"hand_id": 2}),
-    (77, "street_changed", {"hand_id": 2, "street": "flop"}),
-    (80, "hand_ended", {"hand_id": 2}),
+    # frame 66: card 4 removed (n_off), count dips 4 -> 3, no event -- this
+    # is AC-19's "4 -> 3 innerhalb einer Hand erzeugt kein Event".
+    # frame 69: card 4 reconfirmed, count back to 4, no event (turn already
+    # current).
+    (72, "street_changed", {"hand_id": 1, "street": "river"}),
+    (75, "hand_ended", {"hand_id": 1}),
+    (82, "hand_started", {"hand_id": 2}),
+    (82, "street_changed", {"hand_id": 2, "street": "flop"}),
+    (85, "hand_ended", {"hand_id": 2}),
 ]
 
 
@@ -187,8 +209,13 @@ def _assert_matches_expected_sequence(events: list[dict]) -> None:
 def test_replay_produces_the_documented_event_sequence(tmp_path):
     calibration = _calibration()
     detector = MockDetector(calibration, _SCRIPT_PATH)
-    events = _run_replay(tmp_path, calibration, detector)
+    events, state_machine = _run_replay(tmp_path, calibration, detector)
     _assert_matches_expected_sequence(events)
+
+    # AC-18: the button disappearing (last seen at frame 15, never again)
+    # must not change the dealer seat -- the final snapshot still reports
+    # seat_2, silently, with no corresponding event.
+    assert state_machine.snapshot().dealer_seat == "seat_2"
 
 
 # --- Jitter fault case: REQ-21's real PerturbedDetector, not hand-simulated noise ---
@@ -205,5 +232,6 @@ def test_replay_survives_position_jitter(tmp_path):
     config = PerturbationConfig(seed=1234, position_jitter_std=0.5)
     detector = PerturbedDetector(calibration, inner, config)
 
-    events = _run_replay(tmp_path, calibration, detector)
+    events, state_machine = _run_replay(tmp_path, calibration, detector)
     _assert_matches_expected_sequence(events)
+    assert state_machine.snapshot().dealer_seat == "seat_2"

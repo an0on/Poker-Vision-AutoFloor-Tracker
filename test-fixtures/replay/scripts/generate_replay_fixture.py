@@ -31,7 +31,7 @@ _IMAGES_DIR = _OUTPUT_DIR / "images"
 _SCRIPT_PATH = _OUTPUT_DIR / "script.jsonl"
 
 _RESOLUTION = (100, 100)  # (width, height), matches tests/test_replay_fixtures.py's table
-_FRAME_COUNT = 81
+_FRAME_COUNT = 86
 
 _CARD_1 = (63.0, 65.0)
 _CARD_2 = (71.0, 65.0)
@@ -71,31 +71,39 @@ def _build_script_lines() -> list[dict]:
     for frame_index in (35, 36):
         add(frame_index, "chip", 70.0, 20.0)
 
-    # --- Board: flop, a genuine 3 -> 2 -> 3 flicker, turn, river ---
-    for frame_index in range(50, 55):
+    # --- Board: flop, a genuine 3 -> 2 -> 3 flicker, turn, a genuine
+    # 4 -> 3 flicker (AC-19's "4 -> 3 innerhalb einer Hand erzeugt kein
+    # Event", not merely the 3 -> 2 case), river ---
+    # cards 1/2 stay put for the whole hand so the count is driven only by
+    # cards 3/4's absence/return.
+    for frame_index in range(50, 73):
         add(frame_index, "card", *_CARD_1)
         add(frame_index, "card", *_CARD_2)
-    for frame_index in range(50, 55):
+    for frame_index in range(50, 55):  # present for the flop confirm
         add(frame_index, "card", *_CARD_3)
-    for frame_index in range(58, 67):
+    # card 3 dropped 55-57 (n_off=3, removed at 57 -> count dips to 2),
+    # re-detected from 58, re-confirming at 60 (n_on=3) -- 3 -> 2 -> 3.
+    for frame_index in range(58, 73):
         add(frame_index, "card", *_CARD_3)
-    for frame_index in range(55, 67):
-        add(frame_index, "card", *_CARD_1)
-        add(frame_index, "card", *_CARD_2)
-    for frame_index in range(61, 67):
+    for frame_index in range(61, 64):  # confirms at 63 -> turn (count=4)
         add(frame_index, "card", *_CARD_4)
-    for frame_index in range(64, 67):
+    # card 4 dropped 64-66 (removed at 66 -> count dips to 3, AC-19's
+    # "4 -> 3" case: must emit no event), re-detected from 67, re-confirming
+    # at 69 (back to 4, again no event -- turn was already reached).
+    for frame_index in range(67, 73):
+        add(frame_index, "card", *_CARD_4)
+    for frame_index in range(70, 73):  # confirms at 72 -> river (count=5)
         add(frame_index, "card", *_CARD_5)
-    # frames 67-68: everything above still present via last-known state
-    # (miss count 1, 2); frame 69 is the third consecutive miss for all
+    # frames 73-74: everything above still present via last-known state
+    # (miss count 1, 2); frame 75 is the third consecutive miss for all
     # five at once -> board drops to stably empty -> hand_ended.
 
     # --- Second hand: same flop slots, hand_id must be +1 (AC-20) ---
-    for frame_index in range(75, 78):
+    for frame_index in range(80, 83):
         add(frame_index, "card", *_CARD_1)
         add(frame_index, "card", *_CARD_2)
         add(frame_index, "card", *_CARD_3)
-    # frames 78-79 missing (miss 1, 2); frame 80 is the third -> hand_ended
+    # frames 83-84 missing (miss 1, 2); frame 85 is the third -> hand_ended
 
     return [
         {"frame_index": frame_index, "detections": detections}
