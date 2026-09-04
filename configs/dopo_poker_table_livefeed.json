@@ -1,0 +1,53 @@
+{
+  "schema_version": "1.0",
+  "device": "mps",
+  "detector": "mock",
+  "source": {
+    "type": "continuity",
+    "device_index": 0,
+    "resolution_cap": { "width": 4032, "height": 3024 }
+  },
+  "paths": {
+    "calibration_authoring": "calibration/authoring/dopo_poker_table.json",
+    "calibration_runtime": "calibration/runtime/dopo_poker_table.json",
+    "jsonl_export_dir": "data/exports/dopo_poker_table_livefeed",
+    "mock_script": null
+  },
+  "hysteresis": {
+    "n_on": 3,
+    "n_off": 3
+  },
+  "thresholds": {
+    "tracking_max_distance": 150,
+    "dealer_nearest_seat_max_distance": 500
+  },
+  "export": {
+    "jsonl": true,
+    "websocket": true,
+    "tournament_director": false
+  },
+  "debug": {
+    "enabled": true
+  },
+  "aruco": {
+    "dictionary": "DICT_4X4_50",
+    "marker_class_map": {
+      "0": "chip",
+      "1": "chip",
+      "2": "chip",
+      "3": "chip",
+      "4": "chip",
+      "5": "chip",
+      "6": "chip",
+      "7": "chip",
+      "8": "chip",
+      "9": "chip",
+      "10": "dealer_button",
+      "20": "card",
+      "21": "card",
+      "22": "card",
+      "23": "card",
+      "24": "card"
+    }
+  }
+}
