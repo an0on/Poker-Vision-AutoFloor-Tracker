@@ -44,17 +44,26 @@ specific target machine), not on whatever hardware happens to run CI --
 Actions runner, which is typically slower and noisier than the M4 Max
 this was measured on, and would then fail this test for a reason that
 has nothing to do with an actual regression (flagged in local Codex
-review). So the strict `<=10ms` assertion below only runs
-outside CI (detected via the standard `CI` environment variable every
-major CI provider, GitHub Actions included, sets); inside CI the same
-measurement still runs every frame exactly as it would locally, and its
-median is only reported, never asserted on.
+review). So the strict `<=10ms` assertion below is suppressed only for
+"CI on a non-target platform" -- the standard `CI` environment variable
+(every major provider, GitHub Actions included, sets it) *and*
+`platform.system() != "Darwin"`, since CLAUDE.md fixes the target
+machine's OS as macOS (Apple Silicon). A first Codex review pass on this
+same benchmark correctly pointed out that keying off `CI` alone would
+also suppress the budget on a hypothetical self-hosted macOS/M4 Max CI
+runner -- exactly the one CI environment REQ-42's budget *should* still
+apply to -- so both conditions must hold to skip the assertion; on any
+Darwin host (CI or not) and on any non-CI host, the measurement still
+runs every frame exactly as it would locally, and the budget is still
+enforced. Only on a genuinely different, non-target CI runner (e.g.
+today's `ubuntu-latest`) is the median reported without gating on it.
 """
 
 from __future__ import annotations
 
 import gc
 import os
+import platform
 import statistics
 import time
 from datetime import UTC, datetime
@@ -270,10 +279,14 @@ def test_stage_3_to_6_median_overhead_stays_within_budget() -> None:
         f"(REQ-42 budget: {_BUDGET_SECONDS * 1000:.0f} ms) at {len(raw_detections)} "
         "detections/frame"
     )
-    if os.environ.get(_CI_ENV_VAR):
-        # REQ-42's budget is defined for the target machine, not whatever
-        # shared runner happens to execute CI (see module docstring) --
-        # report the measurement instead of gating on it here.
-        print(f"[REQ-42, informational in CI] {summary}")
+    running_on_non_target_ci = bool(os.environ.get(_CI_ENV_VAR)) and platform.system() != "Darwin"
+    if running_on_non_target_ci:
+        # REQ-42's budget is defined for the target machine (macOS/Apple
+        # Silicon, per CLAUDE.md), not whatever shared runner happens to
+        # execute CI (see module docstring) -- report the measurement
+        # instead of gating on it here. A CI run that *is* on Darwin (e.g.
+        # a self-hosted target-machine runner) still enforces the budget
+        # below, same as any local run.
+        print(f"[REQ-42, informational on non-target CI] {summary}")
     else:
         assert median_seconds <= _BUDGET_SECONDS, summary
