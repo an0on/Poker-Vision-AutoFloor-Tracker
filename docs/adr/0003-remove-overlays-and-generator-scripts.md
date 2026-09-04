@@ -36,9 +36,9 @@ archived here)" section of
 ## Consequences
 
 - No `overlays/` directory exists in the source tree; runtime overlay
-  rendering (REQ-37) and `calib compile`/`calib create`/`calib edit`
-  (REQ-9/REQ-10) are the only paths that produce calibration renderings
-  or runtime JSON.
+  rendering (REQ-37) and the calibration CLI's `compile`/`create`/`edit`/
+  `learn-table` commands (REQ-9/REQ-10/REQ-10b) are the only paths that
+  produce calibration renderings or runtime JSON.
 - `pyproject.toml`'s ruff `extend-exclude` no longer references
   `overlays/scripts` (removed alongside the directory).
 - This ADR is a pointer to `docs/archive/README.md` rather than a

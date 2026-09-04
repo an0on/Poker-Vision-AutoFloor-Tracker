@@ -31,8 +31,8 @@ loop-facing format produced by `calib compile`, REQ-9). Both carry a
 silently ignored.
 
 The old JSON Schema, its runtime sample, and their Markdown docs are
-archived under `docs/archive/` (`schemas/poker_table_calibration_schema_v1.json`,
-`runtime/poker_table_runtime_v1.json`,
+archived under `docs/archive/` (`calibration/schemas/poker_table_calibration_schema_v1.json`,
+`calibration/runtime/poker_table_runtime_v1.json`,
 `poker_table_calibration_schema_v1.md`, `poker_table_runtime_v1.md`) for
 historical reference only — see
 [`docs/archive/README.md`](../archive/README.md).
