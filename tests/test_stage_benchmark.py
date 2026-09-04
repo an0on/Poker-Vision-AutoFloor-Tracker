@@ -33,15 +33,28 @@ adversarial case `NearestMatchTracker._MAX_KNOWN_TRACKS_PER_CLASS` (also
 bipartite matching (`tracking/matching.py`'s pure-Python O(n^3)
 Kuhn-Munkres) is the dominant cost in this benchmark, measured at ~8.5 ms
 alone for a 45x45 match in isolation. The full stage 3-6 chain measures
-median ~9.5 ms on the development machine (an Apple M4 Max) -- inside
-REQ-42's 10 ms budget, but with very little headroom; a slower CI runner
-could plausibly tip this over. That is reported here as measured, not
-papered over with a lighter synthetic load or a loosened threshold.
+median ~9.7 ms on the development machine (an Apple M4 Max) -- inside
+REQ-42's 10 ms budget, but with very little headroom. That is reported
+here as measured, not papered over with a lighter synthetic load or a
+loosened threshold.
+
+REQ-42's budget is explicitly defined "auf dem Zielrechner" (on that
+specific target machine), not on whatever hardware happens to run CI --
+`.github/workflows/ci.yml` runs on a shared `ubuntu-latest` GitHub
+Actions runner, which is typically slower and noisier than the M4 Max
+this was measured on, and would then fail this test for a reason that
+has nothing to do with an actual regression (flagged in local Codex
+review). So the strict `<=10ms` assertion below only runs
+outside CI (detected via the standard `CI` environment variable every
+major CI provider, GitHub Actions included, sets); inside CI the same
+measurement still runs every frame exactly as it would locally, and its
+median is only reported, never asserted on.
 """
 
 from __future__ import annotations
 
 import gc
+import os
 import statistics
 import time
 from datetime import UTC, datetime
@@ -82,6 +95,8 @@ _CARD_COUNT = 4
 _BUDGET_SECONDS = 0.010
 _WARMUP_FRAMES = 10
 _TIMED_FRAMES = 30
+# GitHub Actions (and effectively every other CI provider) sets this.
+_CI_ENV_VAR = "CI"
 
 
 def _polygon(*coords: tuple[float, float]) -> TablePolygon:
@@ -250,8 +265,15 @@ def test_stage_3_to_6_median_overhead_stays_within_budget() -> None:
             gc.enable()
 
     median_seconds = statistics.median(durations)
-    assert median_seconds <= _BUDGET_SECONDS, (
-        f"median stage 3-6 overhead {median_seconds * 1000:.2f} ms/frame exceeds "
-        f"REQ-42's {_BUDGET_SECONDS * 1000:.0f} ms budget at {len(raw_detections)} "
+    summary = (
+        f"median stage 3-6 overhead: {median_seconds * 1000:.2f} ms/frame "
+        f"(REQ-42 budget: {_BUDGET_SECONDS * 1000:.0f} ms) at {len(raw_detections)} "
         "detections/frame"
     )
+    if os.environ.get(_CI_ENV_VAR):
+        # REQ-42's budget is defined for the target machine, not whatever
+        # shared runner happens to execute CI (see module docstring) --
+        # report the measurement instead of gating on it here.
+        print(f"[REQ-42, informational in CI] {summary}")
+    else:
+        assert median_seconds <= _BUDGET_SECONDS, summary
